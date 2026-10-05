@@ -775,7 +775,18 @@ async def zammad_prepare_admin_change(
         raise RuntimeError("The Zammad API did not return an object snapshot")
     if resource == "settings" and data.get("name") != before.get("name"):
         raise ValueError("settings name must match the selected setting ID")
-    if operation == "create":
+    if resource == "user_access_tokens" and operation == "create":
+        available_permissions = [
+            item["name"] for item in before.get("permissions", [])
+            if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
+        ] if isinstance(before, Mapping) else []
+        before_preview = {
+            "existing_token_count": len(before.get("tokens", [])) if isinstance(before, Mapping) and isinstance(before.get("tokens"), list) else None,
+            "active_permission_count": len(available_permissions),
+            "requested_permissions_are_active": True,
+        }
+        after = preview_data
+    elif operation == "create":
         after = preview_data
     elif resource == _EMAIL_ACCOUNT_RESOURCE:
         preview = _email_account_preview(before, preview_data)
@@ -798,17 +809,6 @@ async def zammad_prepare_admin_change(
             "requested_configuration": preview_data,
             "side_effects_on_apply": ["send a real SMTP test email", "save the notification channel on success"],
         }
-    elif resource == "user_access_tokens" and operation == "create":
-        available_permissions = [
-            item["name"] for item in before.get("permissions", [])
-            if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
-        ] if isinstance(before, Mapping) else []
-        before_preview = {
-            "existing_token_count": len(before.get("tokens", [])) if isinstance(before, Mapping) and isinstance(before.get("tokens"), list) else None,
-            "active_permission_count": len(available_permissions),
-            "requested_permissions_are_active": True,
-        }
-        after = preview_data
     elif operation in {"update", "configure"}:
         after = _merge_preview(before, preview_data or {})
     else:
