@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -47,6 +48,18 @@ _RESOURCES: dict[str, Resource] = {
     "text_modules": Resource("/text_modules"),
     "core_workflows": Resource("/core_workflows", risk="Changes fields and values presented in ticket forms.", high_impact=True),
     "signatures": Resource("/signatures", risk="Changes message signatures available to agents."),
+    "sms_channels": Resource(
+        "/channels_sms", operations=frozenset({"create", "update", "delete", "enable", "disable", "test"}),
+        risk="Configures SMS delivery or inbound handling; test sends a real SMS and may incur provider charges.", high_impact=True,
+    ),
+    "telegram_channels": Resource(
+        "/channels_telegram", operations=frozenset({"create", "update", "delete", "enable", "disable"}), item=False,
+        risk="Creates or changes a Telegram bot integration and can set a webhook with Telegram.", high_impact=True,
+    ),
+    "whatsapp_channels": Resource(
+        "/channels/admin/whatsapp", operations=frozenset({"create", "update", "delete", "enable", "disable", "preload"}), item=False,
+        risk="Changes a WhatsApp Business integration or calls Meta to verify/preload phone numbers.", high_impact=True,
+    ),
     "report_profiles": Resource("/report_profiles"),
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
@@ -77,11 +90,13 @@ _RESOURCES: dict[str, Resource] = {
 _SPECIAL_CHANNEL = "email_notification"
 _SPECIAL_PATH = "/channels_email_notification"
 _SPECIAL_READ_PATH = "/channels_email"
+_MESSAGING_CHANNELS_RESOURCE = "messaging_channels"
 _EMAIL_ACCOUNT_RESOURCE = "email_account"
 _EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
 _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
 _EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
 _EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
+_MESSAGE_CHANNEL_RESOURCES = {"sms_channels", "telegram_channels", "whatsapp_channels"}
 _SECRET_WORDS = {"password", "pass", "pw", "secret", "token", "credential", "authorization"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
@@ -302,6 +317,118 @@ def _validate_token_create_payload(data: Any, snapshot: Any) -> None:
             raise ValueError("expires_at must be a valid ISO date (YYYY-MM-DD)") from exc
 
 
+def _validate_channel_payload(resource: str, operation: str, data: Any) -> None:
+    def text(value: Any, field: str, *, secret: bool = False) -> None:
+        if isinstance(value, Mapping) and set(value) == {"$secret_env"} and secret:
+            return
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field} must be a non-empty string")
+
+    def keys(payload: Any, allowed: set[str], required: set[str], label: str) -> Mapping[str, Any]:
+        if not isinstance(payload, Mapping) or set(payload) - allowed or not required.issubset(payload):
+            raise ValueError(f"{label} accepts only {', '.join(sorted(allowed))}; required: {', '.join(sorted(required))}")
+        return payload
+
+    if operation in {"enable", "disable", "delete"}:
+        if data not in (None, {}):
+            raise ValueError(f"{operation} does not accept data")
+        return
+
+    if operation == "test" and resource == "sms_channels":
+        payload = keys(data, {"options", "recipient", "message"}, {"options", "recipient", "message"}, "SMS test")
+        options = keys(payload["options"], {"adapter", "token", "sender", "account_id", "gateway"}, {"adapter"}, "SMS test options")
+        adapter = options["adapter"]
+        fields = {
+            "sms/message_bird": {"adapter", "token", "sender"},
+            "sms/twilio": {"adapter", "account_id", "token", "sender"},
+            "sms/massenversand": {"adapter", "gateway", "token", "sender"},
+        }
+        if adapter not in fields or set(options) - fields[adapter]:
+            raise ValueError("Unsupported SMS adapter or option fields")
+        if adapter == "sms/massenversand":
+            raise ValueError("The Massenversand test endpoint can expose its token in provider errors; test it through Zammad's UI")
+        for key in set(options) - {"adapter"}:
+            text(options[key], f"options.{key}", secret=key == "token")
+        text(payload["recipient"], "recipient")
+        text(payload["message"], "message")
+        return
+
+    if operation == "preload" and resource == "whatsapp_channels":
+        payload = keys(data, {"channel_id", "business_id", "access_token"}, set(), "WhatsApp preload")
+        if "channel_id" in payload:
+            _validate_id(payload["channel_id"])
+            if set(payload) != {"channel_id"}:
+                raise ValueError("For an existing WhatsApp channel, preload accepts only channel_id")
+        elif set(payload) != {"business_id", "access_token"}:
+            raise ValueError("WhatsApp preload requires channel_id or business_id and access_token")
+        if "business_id" in payload:
+            text(payload["business_id"], "business_id")
+            text(payload["access_token"], "access_token", secret=True)
+        return
+
+    if resource == "sms_channels":
+        payload = keys(data, {"area", "options", "group_id"}, {"area", "options"}, "SMS channel")
+        if payload["area"] not in {"Sms::Account", "Sms::Notification"}:
+            raise ValueError("SMS area must be Sms::Account or Sms::Notification")
+        if payload["area"] == "Sms::Account":
+            if "group_id" not in payload:
+                raise ValueError("SMS account channels require group_id")
+            _validate_id(payload["group_id"])
+        elif "group_id" in payload:
+            raise ValueError("SMS notification channels do not accept group_id")
+        options = keys(payload["options"], {"adapter", "token", "sender", "account_id", "gateway"}, {"adapter"}, "SMS options")
+        fields = {
+            "sms/message_bird": {"adapter", "token", "sender"},
+            "sms/twilio": {"adapter", "account_id", "token", "sender"},
+            "sms/massenversand": {"adapter", "gateway", "token", "sender"},
+        }
+        adapter = options["adapter"]
+        if adapter not in fields or set(options) - fields[adapter]:
+            raise ValueError("Unsupported SMS adapter or option fields")
+        if adapter == "sms/massenversand" and payload["area"] != "Sms::Notification":
+            raise ValueError("Massenversand is supported only for notification channels")
+        for key in set(options) - {"adapter"}:
+            text(options[key], f"options.{key}", secret=key == "token")
+        if adapter == "sms/massenversand":
+            gateway = urlsplit(options["gateway"])
+            try:
+                address = ipaddress.ip_address(gateway.hostname or "")
+            except ValueError:
+                address = None
+            if (
+                gateway.scheme != "https" or not gateway.hostname or gateway.username or gateway.password
+                or gateway.query or gateway.fragment or address is not None
+                or gateway.hostname.lower() == "localhost" or "." not in gateway.hostname
+            ):
+                raise ValueError("Massenversand gateway must be an HTTPS hostname URL without credentials, query, or fragment")
+        return
+
+    if resource == "telegram_channels":
+        payload = keys(data, {"api_token", "group_id", "welcome", "goodbye"}, {"api_token", "group_id"}, "Telegram channel")
+        text(payload["api_token"], "api_token", secret=True)
+        _validate_id(payload["group_id"])
+        for key in {"welcome", "goodbye"} & set(payload):
+            if not isinstance(payload[key], str):
+                raise ValueError(f"{key} must be a string")
+        return
+
+    if resource == "whatsapp_channels":
+        allowed = {"business_id", "access_token", "app_secret", "phone_number_id", "group_id", "welcome", "reminder_active", "reminder_message"}
+        required = {"business_id", "access_token", "app_secret", "phone_number_id", "group_id"}
+        payload = keys(data, allowed, required, "WhatsApp channel")
+        for key in {"business_id", "phone_number_id"}:
+            text(payload[key], key)
+        for key in {"access_token", "app_secret"}:
+            text(payload[key], key, secret=True)
+        _validate_id(payload["group_id"])
+        if "welcome" in payload and not isinstance(payload["welcome"], str):
+            raise ValueError("welcome must be a string")
+        if "reminder_active" in payload and not isinstance(payload["reminder_active"], bool):
+            raise ValueError("reminder_active must be a boolean")
+        if "reminder_message" in payload and not isinstance(payload["reminder_message"], str):
+            raise ValueError("reminder_message must be a string")
+
+
 def _resource(resource: str) -> Resource:
     try:
         return _RESOURCES[resource]
@@ -314,8 +441,12 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
+        "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
+        "/channels_telegram_enable", "/channels_telegram_disable",
+        "/channels/admin/whatsapp/preload",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
+    whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
     for item in _RESOURCES.values():
         allowed.add(item.path)
     item_path = any(
@@ -326,7 +457,7 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
-    if path not in allowed and not email_group_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
+    if path not in allowed and not email_group_path and not whatsapp_action_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
@@ -363,7 +494,8 @@ async def zammad_list_admin_resources() -> str:
     return _json({name: {"operations": sorted(spec.operations), "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
         _SPECIAL_CHANNEL: {"operations": ["configure"], "risk": "POST sends a real test email and saves the active notification channel."},
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
-        "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists metadata; writes change inbound mailbox state and can alter ticket creation."},
+        "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
+        _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "knowledge_base_categories": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
@@ -378,8 +510,13 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if isinstance(per_page, bool) or not 1 <= per_page <= 100:
         raise ValueError("per_page must be between 1 and 100")
     params = {"page": page, "per_page": per_page}
-    if resource in {_SPECIAL_CHANNEL, "email_channels"}:
-        return _json(_project_email_channels(await _get(_SPECIAL_READ_PATH, params)))
+    if resource in {_SPECIAL_CHANNEL, "email_channels", _MESSAGING_CHANNELS_RESOURCE}:
+        channel_data = await _get(_SPECIAL_READ_PATH, params)
+        if resource == _MESSAGING_CHANNELS_RESOURCE:
+            return _json(_project_messaging_channels(channel_data))
+        return _json(_project_email_channels(channel_data))
+    if resource in _MESSAGE_CHANNEL_RESOURCES:
+        return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
     spec = _resource(resource)
     return _json(await _get(spec.path, params))
 
@@ -444,6 +581,8 @@ async def zammad_get_knowledge_base_record(
 async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any:
     if resource in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
         return await _get(_SPECIAL_READ_PATH)
+    if resource in _MESSAGE_CHANNEL_RESOURCES:
+        return await _get(_resource(resource).path)
     if resource == "__knowledge_base_settings__":
         return await _get(f"/knowledge_bases/{_validate_id(object_id)}")
     spec = _resource(resource)
@@ -599,12 +738,50 @@ def _project_email_channels(value: Any) -> dict[str, Any]:
             for item in fixed if isinstance(item, Mapping)
         ] if isinstance(fixed, list) else [],
         "assets": {
-            "Channel": select(channel_assets, channel_fields),
+            "Channel": {
+                channel_id: channel for channel_id, channel in select(channel_assets, channel_fields).items()
+                if channel.get("area") in {"Email::Account", "Email::Notification"}
+            },
             "EmailAddress": select(address_assets, address_fields),
         },
         "channel_driver": value.get("channel_driver", {}),
         "config": value.get("config", {}),
     }
+
+
+def _project_messaging_channels(value: Any) -> dict[str, Any]:
+    """Return non-email channel configuration without linked person assets or diagnostic logs."""
+    projected = _project_email_channels(value)
+    assets = value.get("assets", {}) if isinstance(value, Mapping) else {}
+    channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+    fields = {
+        "id", "name", "area", "active", "group_id", "options", "preferences",
+        "status_in", "status_out", "created_at", "updated_at",
+    }
+
+    def safe_value(item: Any, key: str | None = None) -> Any:
+        if key == "gateway" and isinstance(item, str):
+            parsed = urlsplit(item)
+            hostname = parsed.hostname or ""
+            if ":" in hostname and not hostname.startswith("["):
+                hostname = f"[{hostname}]"
+            netloc = f"{hostname}:{parsed.port}" if parsed.port else hostname
+            return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+        if isinstance(item, Mapping):
+            return {str(nested_key): safe_value(nested_value, str(nested_key)) for nested_key, nested_value in item.items()}
+        if isinstance(item, list):
+            return [safe_value(nested) for nested in item]
+        return item
+
+    channels = {
+        str(channel_id): {
+            field: safe_value(item[field], field) if field == "options" else item[field]
+            for field in fields if field in item
+        }
+        for channel_id, item in channel_assets.items()
+        if isinstance(item, Mapping) and item.get("area") not in {"Email::Account", "Email::Notification"}
+    } if isinstance(channel_assets, Mapping) else {}
+    return {"channel_ids": sorted(channels, key=lambda item: int(item) if item.isdigit() else float("inf")), "channels": channels}
 
 
 def _email_account_preview(before: Any, data: Mapping[str, Any]) -> dict[str, Any]:
@@ -669,7 +846,7 @@ async def _clean_expired_plans() -> None:
 @mcp.tool()
 async def zammad_prepare_admin_change(
     resource: str,
-    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign"],
+    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign", "test", "preload"],
     data: dict[str, Any] | None = None,
     object_id: int | None = None,
     acknowledge_high_impact: bool = False,
@@ -716,6 +893,21 @@ async def zammad_prepare_admin_change(
             _validate_id(data["group_id"])
         elif data:
             raise ValueError(f"{operation} does not accept data")
+    elif resource in _MESSAGE_CHANNEL_RESOURCES:
+        spec = _resource(resource)
+        if operation not in spec.operations:
+            raise ValueError(f"Operation {operation!r} is not allowed for resource {resource!r}")
+        if operation in {"create", "test", "preload"}:
+            if object_id is not None:
+                raise ValueError(f"{operation} does not accept object_id")
+            if not isinstance(data, dict) or not data:
+                raise ValueError(f"{operation} requires a non-empty JSON object in data")
+        else:
+            object_id = _validate_id(object_id)
+            if operation == "update" and (not isinstance(data, dict) or not data):
+                raise ValueError("update requires a non-empty JSON object in data")
+            if operation != "update" and data:
+                raise ValueError(f"{operation} does not accept data")
     else:
         spec = _resource(resource)
         if operation not in spec.operations:
@@ -746,9 +938,31 @@ async def zammad_prepare_admin_change(
         raise ValueError("This change is high impact; inspect the resource risk and set acknowledge_high_impact=true to prepare it")
 
     data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
+    if resource in _MESSAGE_CHANNEL_RESOURCES:
+        _validate_channel_payload(resource, operation, data)
 
     before = await _snapshot(resource, operation, object_id)
-    if resource == "user_access_tokens" and operation == "create":
+    if resource in _MESSAGE_CHANNEL_RESOURCES:
+        before_preview = _project_messaging_channels(before)
+        if operation in {"create", "update"}:
+            after = preview_data
+        elif operation in {"enable", "disable"}:
+            after = {"id": object_id, "active": operation == "enable"}
+        elif operation == "test":
+            after = {
+                "test_sms_to": preview_data["recipient"],
+                "message": preview_data["message"],
+                "side_effects_on_apply": ["send a real SMS; provider charges may apply"],
+            }
+        elif operation == "preload":
+            after = {
+                "provider_request": "retrieve WhatsApp phone-number options from Meta",
+                "input": preview_data,
+                "side_effects_on_apply": ["make an external request to Meta"],
+            }
+        else:
+            after = None
+    elif resource == "user_access_tokens" and operation == "create":
         _validate_token_create_payload(data, before)
     dependencies: list[dict[str, str]] = []
     group_id = None
@@ -756,6 +970,8 @@ async def zammad_prepare_admin_change(
         group_id = data["group_id"]
     elif resource == "email_channels" and operation == "reassign":
         group_id = data["group_id"]
+    elif resource in _MESSAGE_CHANNEL_RESOURCES and operation in {"create", "update"} and isinstance(data, Mapping):
+        group_id = data.get("group_id")
     if group_id is not None:
         group_before = await _get(f"/groups/{_validate_id(group_id)}")
         dependencies.append({"path": f"/groups/{group_id}", "fingerprint": _digest(group_before)})
@@ -771,6 +987,12 @@ async def zammad_prepare_admin_change(
         current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
         if object_id not in current_ids:
             raise ValueError("object_id must identify an existing inbound email channel")
+    if resource in _MESSAGE_CHANNEL_RESOURCES and operation in {"update", "delete", "enable", "disable"}:
+        assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+        channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+        channel_ids = {int(value) for value in channel_assets if str(value).isdigit()} if isinstance(channel_assets, Mapping) else set()
+        if object_id not in channel_ids:
+            raise ValueError("object_id must identify an existing messaging channel")
     if operation in {"update", "delete"} and not isinstance(before, Mapping):
         raise RuntimeError("The Zammad API did not return an object snapshot")
     if resource == "settings" and data.get("name") != before.get("name"):
@@ -812,7 +1034,7 @@ async def zammad_prepare_admin_change(
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"} and not (
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
         resource == "user_access_tokens" and operation == "create"
     ):
         before_preview = before
@@ -888,6 +1110,35 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 result = await _request("POST", f"{_EMAIL_CHANNEL_GROUP_PATH}/{channel_id}", data)
             else:
                 raise ValueError("Unsupported email channel operation")
+        elif resource in _MESSAGE_CHANNEL_RESOURCES:
+            spec = _resource(resource)
+            if operation == "create":
+                result = await _request("POST", spec.path, data)
+            elif operation == "update":
+                result = await _request("PUT", f"{spec.path}/{plan['object_id']}", data)
+            elif operation == "delete":
+                if resource == "telegram_channels":
+                    result = await _request("DELETE", spec.path, {"id": plan["object_id"]})
+                else:
+                    result = await _request("DELETE", f"{spec.path}/{plan['object_id']}")
+            elif operation in {"enable", "disable"}:
+                active = operation == "enable"
+                if resource == "whatsapp_channels":
+                    action = "enable" if active else "disable"
+                    result = await _request("POST", f"{spec.path}/{plan['object_id']}/{action}")
+                else:
+                    action_path = f"/{'channels_sms' if resource == 'sms_channels' else 'channels_telegram'}_{operation}"
+                    result = await _request("POST", action_path, {"id": plan["object_id"]})
+            elif operation == "test" and resource == "sms_channels":
+                test_result = await _request("POST", "/channels_sms/test", data)
+                result = {
+                    "success": isinstance(test_result, Mapping) and test_result.get("success") is True,
+                    "diagnostics_returned": False,
+                }
+            elif operation == "preload" and resource == "whatsapp_channels":
+                result = await _request("POST", f"{spec.path}/preload", data)
+            else:
+                raise ValueError("Unsupported messaging channel operation")
         elif resource == "user_access_tokens" and operation == "create":
             token_response = await _request("POST", "/user_access_token", data)
             token_value = token_response.get("token") if isinstance(token_response, Mapping) else None
