@@ -65,6 +65,10 @@ from zammad_admin_mcp.admin_schemas.auth_settings import supports as is_auth_cre
 from zammad_admin_mcp.admin_schemas.oauth_applications import project_application as project_oauth_application
 from zammad_admin_mcp.admin_schemas.oauth_applications import project_collection as project_oauth_applications
 from zammad_admin_mcp.admin_schemas.oauth_applications import validate_payload as validate_oauth_application_payload
+from zammad_admin_mcp.admin_schemas.time_accounting import project_report as project_time_accounting_report
+from zammad_admin_mcp.admin_schemas.time_accounting import project_types as project_time_accounting_types
+from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
+from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -192,6 +196,10 @@ _RESOURCES: dict[str, Resource] = {
     ),
     "oauth_applications": Resource(
         "/applications", risk="Changes OAuth client registrations, redirect destinations, or client credentials.", high_impact=True,
+    ),
+    "time_accounting_types": Resource(
+        "/time_accounting/types", operations=frozenset({"create", "update"}),
+        risk="Changes the activity categories available for time accounting.", high_impact=True,
     ),
 }
 
@@ -450,6 +458,7 @@ async def _request(
     ticket_item_path = bool(re.fullmatch(r"/tickets/\d+", path))
     ticket_selector_path = path == "/tickets/selector"
     oauth_application_token_path = path == "/applications/token"
+    time_accounting_report_path = bool(re.fullmatch(r"/time_accounting/log/(?:by_activity|by_ticket|by_customer|by_organization)/\d{4}/\d{1,2}", path))
     fixed_special_paths = (
         email_group_path, whatsapp_action_path, microsoft365_group_path,
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
@@ -459,6 +468,7 @@ async def _request(
         knowledge_base_settings_path, translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
+        time_accounting_report_path,
     )
     if path not in allowed and not any(fixed_special_paths):
         raise ValueError("Unsupported Zammad API resource")
@@ -470,6 +480,8 @@ async def _request(
         raise ValueError("Ticket selector previews support POST only")
     if oauth_application_token_path and method != "POST":
         raise ValueError("OAuth application token issuance supports POST only")
+    if time_accounting_report_path and method != "GET":
+        raise ValueError("Time accounting reports support GET only")
     return await _send_api_request(
         method, path, payload, params,
         files=files,
@@ -488,6 +500,19 @@ async def zammad_server_version() -> str:
 
 
 @mcp.tool()
+async def zammad_get_time_accounting_report(
+    report: Literal["by_activity", "by_ticket", "by_customer", "by_organization"],
+    year: int,
+    month: int,
+    limit: int = 21,
+) -> str:
+    """Read a bounded, privacy-projected Time Accounting Admin report for one month."""
+    validate_time_accounting_report_request(report, year, month, limit)
+    result = await _get(f"/time_accounting/log/{report}/{year}/{month}", {"limit": limit})
+    return _json(project_time_accounting_report(report, result))
+
+
+@mcp.tool()
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
     return _json({name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
@@ -502,6 +527,7 @@ async def zammad_list_admin_resources() -> str:
         "ldap_import_actions": {"operations": ["dry_run", "sync"], "risk": "Dry-run reads all active LDAP directories and records aggregate results; sync may create, update, or deactivate Zammad users."},
         "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
+        "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
     })
 
 
@@ -549,6 +575,8 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         return _json(project_data_privacy_tasks(await _get("/data_privacy_tasks", params)))
     if resource == "oauth_applications":
         return _json(project_oauth_applications(await _get("/applications", {**params, "full": True})))
+    if resource == "time_accounting_types":
+        return _json(project_time_accounting_types(await _get(_resource(resource).path, params)))
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
@@ -688,7 +716,14 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
     if not spec.item:
         raise ValueError("This resource does not support item reads")
     object_id = _validate_id(object_id)
-    result = await _oauth_application_snapshot(object_id) if resource == "oauth_applications" else await _get(f"{spec.path}/{object_id}")
+    if resource == "oauth_applications":
+        result = await _oauth_application_snapshot(object_id)
+    elif resource == "time_accounting_types":
+        result = await _time_accounting_type_snapshot(object_id)
+    else:
+        result = await _get(f"{spec.path}/{object_id}")
+    if result is None:
+        raise ValueError("No matching object was returned by Zammad")
     if resource in {"settings", "product_logo"}:
         result = _project_admin_settings(result) if resource == "settings" else _project_settings(result)
     if resource in {"ai_agents", "ai_text_tools"}:
@@ -1543,10 +1578,31 @@ async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any
         if operation == "create":
             return await _get("/applications", {"full": True})
         return await _oauth_application_snapshot(_validate_id(object_id))
+    if resource == "time_accounting_types" and operation != "create":
+        return await _time_accounting_type_snapshot(_validate_id(object_id))
     spec = _resource(resource)
     if operation == "create":
         return await _get(spec.path)
     return await _get(f"{spec.path}/{_validate_id(object_id)}")
+
+
+async def _time_accounting_type_snapshot(type_id: int | None = None) -> Any:
+    rows: list[Mapping[str, Any]] = []
+    for page in range(1, 101):
+        batch = await _get(_resource("time_accounting_types").path, {"page": page, "per_page": 100})
+        if not isinstance(batch, list) or any(not isinstance(item, Mapping) for item in batch):
+            raise RuntimeError("Zammad did not return activity types")
+        rows.extend(batch)
+        if len(batch) < 100:
+            break
+    else:
+        raise RuntimeError("Activity type inventory exceeds the supported snapshot size")
+    if type_id is None:
+        return rows
+    matches = [item for item in rows if item.get("id") == type_id]
+    if len(matches) > 1:
+        raise RuntimeError("Zammad returned duplicate activity type IDs")
+    return matches[0] if matches else None
 
 
 async def _ldap_sources_snapshot() -> list[Mapping[str, Any]]:
@@ -1994,6 +2050,8 @@ async def zammad_prepare_admin_change(
             object_id = _validate_id(object_id)
         if operation in {"create", "update"} and (not isinstance(data, dict) or not data):
             raise ValueError("create and update require a non-empty JSON object in data")
+        if resource == "time_accounting_types" and operation in {"create", "update"}:
+            data = validate_time_accounting_type_payload(operation, data)
         if resource == "settings" and operation == "update":
             if set(data) != {"name", "state_current"} or not isinstance(data.get("name"), str):
                 raise ValueError("settings updates require exactly name and state_current fields")
@@ -2391,6 +2449,9 @@ async def zammad_prepare_admin_change(
             after = project_oauth_application(_merge_preview(before, preview_data or {})) if operation == "update" else None
             if operation == "update" and isinstance(preview_data, Mapping) and preview_data.get("redirect_uri_warnings"):
                 after["redirect_uri_warnings"] = preview_data["redirect_uri_warnings"]
+    elif resource == "time_accounting_types":
+        before_preview = project_time_accounting_types([before])[0] if isinstance(before, Mapping) else None
+        after = preview_data if operation == "create" else project_time_accounting_types([_merge_preview(before, preview_data or {})])[0]
     elif operation == "create":
         after = preview_data
     elif resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -2418,7 +2479,7 @@ async def zammad_prepare_admin_change(
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", "product_logo", "google_channels", "microsoft365_channels", "microsoft_graph_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", "product_logo", "google_channels", "microsoft365_channels", "microsoft_graph_channels", "time_accounting_types", *_MESSAGE_CHANNEL_RESOURCES} and not (
         resource == "user_access_tokens" and operation == "create"
     ):
         before_preview = before
