@@ -63,7 +63,46 @@ def project_object(resource: str, value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise RuntimeError("Zammad did not return an AI configuration object")
     fields = _AGENT_FIELDS | {"id", "created_at", "updated_at"} if resource == "ai_agents" else _TEXT_TOOL_FIELDS | {"id", "created_at", "updated_at"}
-    return {key: value[key] for key in fields if key in value}
+    result = {key: value[key] for key in fields if key in value}
+    if resource == "ai_agents" and "references" in value:
+        result["references"] = project_references(value["references"])
+    return result
+
+
+def project_references(value: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Zammad did not return AI agent reference metadata")
+    result: dict[str, list[dict[str, Any]]] = {}
+    for model, references in value.items():
+        if not isinstance(model, str) or not model or not isinstance(references, list):
+            raise RuntimeError("Zammad returned invalid AI agent reference metadata")
+        projected = []
+        for reference in references:
+            if not isinstance(reference, Mapping):
+                raise RuntimeError("Zammad returned invalid AI agent reference metadata")
+            object_id = reference.get("id")
+            name = reference.get("name")
+            if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0 or not isinstance(name, str):
+                raise RuntimeError("Zammad returned invalid AI agent reference metadata")
+            projected.append({"id": object_id, "name": name})
+        result[model] = projected
+    return result
+
+
+def project_agent_snapshot(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Zammad did not return a full AI agent snapshot")
+    object_id = value.get("id")
+    assets = value.get("assets")
+    agents = assets.get("AIAgent") if isinstance(assets, Mapping) else None
+    agent = agents.get(str(object_id)) if isinstance(agents, Mapping) and object_id is not None else None
+    if (
+        not isinstance(agent, Mapping)
+        or str(agent.get("id")) != str(object_id)
+        or "references" not in agent
+    ):
+        raise RuntimeError("Zammad did not return AI agent reference metadata")
+    return project_object("ai_agents", agent)
 
 
 def project_collection(resource: str, value: Any) -> Any:

@@ -64,6 +64,7 @@ from zammad_admin_mcp.admin_schemas.crypto_material import validate_smime_privat
 from zammad_admin_mcp.admin_schemas.system_report import project_summary as project_system_report_summary
 from zammad_admin_mcp.admin_schemas.ai_admin import project_collection as project_ai_collection
 from zammad_admin_mcp.admin_schemas.ai_admin import project_object as project_ai_object
+from zammad_admin_mcp.admin_schemas.ai_admin import project_agent_snapshot
 from zammad_admin_mcp.admin_schemas.ai_admin import project_agent_types
 from zammad_admin_mcp.admin_schemas.ai_admin import validate_payload as validate_ai_payload
 from zammad_admin_mcp.admin_schemas.sessions import project_sessions
@@ -1139,13 +1140,15 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
         result = await _oauth_application_snapshot(object_id)
     elif resource == "time_accounting_types":
         result = await _time_accounting_type_snapshot(object_id)
+    elif resource == "ai_agents":
+        result = project_agent_snapshot(await _get(f"{spec.path}/{object_id}", {"full": True}))
     else:
         result = await _get(f"{spec.path}/{object_id}")
     if result is None:
         raise ValueError("No matching object was returned by Zammad")
     if resource in {"settings", "product_logo"}:
         result = _project_admin_settings(result) if resource == "settings" else _project_settings(result)
-    if resource in {"ai_agents", "ai_text_tools"}:
+    if resource == "ai_text_tools":
         result = project_ai_object(resource, result)
     if resource == "oauth_applications":
         result = project_oauth_application(result)
@@ -2096,6 +2099,10 @@ async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any
     spec = _resource(resource)
     if operation == "create":
         return await _get(spec.path)
+    if resource == "ai_agents":
+        return project_agent_snapshot(
+            await _get(f"{spec.path}/{_validate_id(object_id)}", {"full": True})
+        )
     return await _get(f"{spec.path}/{_validate_id(object_id)}")
 
 

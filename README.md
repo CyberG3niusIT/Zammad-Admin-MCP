@@ -136,7 +136,7 @@ Supported workflows include:
 - Package management can list installed packages and stage install/removal plans; install payloads are size-limited and summarized without returning package file contents
 - The system report is available as a redacted summary that excludes setting values, environment data, hardware identifiers, paths, and activity timestamps
 - Object Manager attribute removals and the global queued-migration action use separate previews; removal migrations permanently drop the affected database column and its values
-- AI agents and Writing Assistant tools can be read and changed through staged CRUD; previews include prompt/configuration changes and call out automated ticket effects or external provider usage charges
+- AI agents and Writing Assistant tools can be read and changed through staged CRUD; AI agent previews show Trigger, Job/Scheduler, and Macro references and reject stale reference sets, while previews also call out automated ticket effects or external provider usage charges
 - Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
 - Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
 - Maintenance and Time Accounting settings use the staged Settings workflow; Time Accounting activity types support staged create/update, and monthly reports are available with bounded, privacy-projected results
