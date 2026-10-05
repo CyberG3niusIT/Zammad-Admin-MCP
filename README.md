@@ -4,9 +4,9 @@
 
 # Zammad Admin MCP
 
-### Secure AI Administration Bridge for Zammad
+### Controlled administration interface between AI agents and Zammad
 
-A controlled Model Context Protocol server for AI-assisted Zammad administration, automation and operational workflows.
+A Model Context Protocol server for secure, auditable and permission-aware Zammad administration workflows.
 
 </div>
 
@@ -14,59 +14,53 @@ A controlled Model Context Protocol server for AI-assisted Zammad administration
 
 ## Overview
 
-Zammad Admin MCP connects AI agents with Zammad administration capabilities through a controlled, auditable and permission-aware interface.
+Zammad Admin MCP provides a controlled interface for MCP-compatible AI clients to interact with selected Zammad administration resources.
 
-The goal is not unrestricted AI access to a helpdesk system.
+The project is designed around one principle:
 
-The goal is a secure administration layer where every action can be reviewed, controlled and executed deliberately.
+> AI systems may assist administration, but administrative control remains explicit, reviewable and bounded.
 
-```
-AI Agent
-   |
-   v
-MCP Protocol Layer
-   |
-   v
+Instead of exposing unrestricted API access, Zammad Admin MCP introduces validation, preview workflows and controlled execution paths.
+
+```text
+AI Client
+    |
+    v
+MCP Protocol
+    |
+    v
 Zammad Admin MCP
-   |
-   +-- Permission Control
-   +-- Preview Before Apply
-   +-- Audit-Oriented Workflow
-   |
-   v
+    |
+    +-- Resource Allowlist
+    +-- Validation Layer
+    +-- Preview / Approval Workflow
+    +-- Secret Redaction
+    +-- Audit-oriented Execution
+    |
+    v
 Zammad API
 ```
 
 ---
 
-# Core Principles
+# Design Goals
 
-## 🔐 Security First
+## Security by Design
 
-AI assistants should not receive uncontrolled administrative access.
+Zammad Admin MCP intentionally avoids becoming a generic API proxy.
 
-Zammad Admin MCP uses:
+Implemented safeguards:
 
 - allowlisted resources and operations
-- controlled API access
-- preview before apply workflows
-- explicit approval before changes
-- secret redaction in responses
-- protection against arbitrary API forwarding
+- controlled write workflows
+- preview before apply
+- explicit approval requirement
+- recursive secret redaction
+- no arbitrary URL forwarding
+- no arbitrary HTTP method execution
+- no direct Rails console access
 
----
-
-## 🧠 AI-Assisted Administration
-
-The MCP server provides structured access for AI systems while keeping administrators in control.
-
-Supported workflows include:
-
-- reading Zammad administration resources
-- inspecting objects and configurations
-- preparing controlled changes
-- applying approved changes
-- retrieving structured knowledge base data
+The MCP server does not grant additional Zammad permissions. The configured API token remains the authority.
 
 ---
 
@@ -75,106 +69,61 @@ Supported workflows include:
 ```mermaid
 flowchart LR
 
-A[AI Agent]
-B[MCP Client]
-C[Zammad Admin MCP]
-D[Security & Approval Layer]
-E[Zammad API]
+A[AI Agent / MCP Client]
+B[Zammad Admin MCP]
+C[Validation & Approval]
+D[Zammad REST API]
 
 A --> B
 B --> C
 C --> D
-D --> E
 ```
+
+The architecture separates intent, validation and execution.
+
+Administrative operations are not executed merely because the MCP server is connected.
 
 ---
 
-# Current Capabilities
+# Capabilities
 
-## Administration Access
+## Read Operations
 
-- Read server version and allowlisted administration resources
-- Paginated collection reads
-- Object inspection
-- Knowledge base access
-- Structured administration workflows
+- server version detection
+- allowlisted administration resources
+- object inspection
+- knowledge base access
+- paginated collection reads
 
 ## Controlled Changes
 
-Changes are never executed directly when the server is loaded.
+Changes follow a prepare/apply workflow:
 
-Workflow:
-
-```
+```text
 Prepare Change
-      |
-      v
-Preview Before/After
-      |
-      v
+       |
+       v
+Generate Preview
+       |
+       v
 Explicit Approval
-      |
-      v
+       |
+       v
 Apply Change
 ```
 
-Supported preparation workflows include:
+Supported workflows include:
 
 - create operations
 - update operations
-- delete operations where explicitly allowed
-- selected high-impact configuration workflows
+- selected delete operations
+- selected high-impact configuration changes
 
 ---
 
-# Security Model
+# MCP Tools
 
-Important design decisions:
-
-- No arbitrary URL execution
-- No arbitrary HTTP method forwarding
-- No unrestricted Rails console access
-- No hidden configuration changes
-- No credential storage in Git
-
-The MCP server does not increase Zammad permissions.
-
-The Zammad API token permissions remain the authority for actual access.
-
----
-
-# Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/CyberG3niusIT/Zammad-Admin-MCP.git
-cd Zammad-Admin-MCP
-```
-
-Create environment:
-
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e .
-```
-
-Start the MCP server:
-
-```bash
-zammad-admin-mcp
-```
-
-Configure your MCP client with the absolute path to the executable.
-
-Keep credentials inside environment variables or local ignored configuration files.
-
----
-
-# Available MCP Tools
-
-Core tools:
+Core:
 
 - `zammad_server_version`
 - `zammad_list_admin_resources`
@@ -183,13 +132,13 @@ Core tools:
 - `zammad_prepare_admin_change`
 - `zammad_apply_admin_change`
 
-Knowledge base tools:
+Knowledge base:
 
 - `zammad_get_knowledge_base`
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_record`
 
-Legacy compatibility readers:
+Compatibility readers:
 
 - groups
 - roles
@@ -200,11 +149,30 @@ Legacy compatibility readers:
 
 ---
 
+# Installation
+
+```bash
+git clone https://github.com/CyberG3niusIT/Zammad-Admin-MCP.git
+cd Zammad-Admin-MCP
+
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+
+zammad-admin-mcp
+```
+
+Configure the MCP client with the absolute path to the executable.
+
+Store credentials only through environment variables or ignored local configuration.
+
+---
+
 # Limitations
 
-This project intentionally avoids pretending to provide complete Zammad UI parity.
+Zammad Admin MCP does not claim complete Zammad UI coverage.
 
-Currently not implemented:
+Currently outside the generic workflow:
 
 - complete system settings coverage
 - API token lifecycle management
@@ -212,23 +180,24 @@ Currently not implemented:
 - inbound mailbox configuration
 - unrestricted object manager migrations
 
-Unsupported areas should receive dedicated, reviewed workflows instead of generic API access.
+New capabilities should receive dedicated workflows with defined permissions, validation and side effects.
 
 ---
 
-# Development Philosophy
+# Development Principles
 
-Zammad Admin MCP follows a simple principle:
+Every administrative capability should define:
 
-> AI should operate as a controlled administrator, not as an uncontrolled superuser.
-
-Every new capability should define:
-
-- permissions
-- side effects
+- required permissions
+- affected resources
 - validation rules
 - secret handling
+- failure behavior
 - rollback considerations
+
+The objective is not maximum automation.
+
+The objective is reliable automation.
 
 ---
 
@@ -237,7 +206,8 @@ Every new capability should define:
 - [Zammad REST API](https://docs.zammad.org/en/latest/api/intro.html)
 - [Object Manager API](https://docs.zammad.org/en/latest/api/object.html)
 - [Email Notification API](https://docs.zammad.org/en/pre-release/api/email-notification.html)
-- See `ADMIN_COVERAGE.md` for detailed coverage information.
+
+See `ADMIN_COVERAGE.md` for detailed coverage information.
 
 ---
 
