@@ -118,6 +118,9 @@ Supported workflows include:
 - update operations
 - selected delete operations
 - selected high-impact configuration changes
+- staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
+
+Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 
 ---
 
@@ -164,7 +167,7 @@ zammad-admin-mcp
 
 Configure the MCP client with the absolute path to the executable.
 
-Store credentials only through environment variables or ignored local configuration.
+Store credentials only through environment variables or ignored local configuration. Never put secret literals in tool arguments. For secret fields, pass an environment reference such as `{"$secret_env":"ZAMMAD_SECRET_IMAP_PASSWORD"}`; values must be available to the MCP process and are redacted from previews. Reference names must start with `ZAMMAD_SECRET_` or `MCP_SECRET_`.
 
 ---
 
@@ -174,10 +177,9 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 
 Currently outside the generic workflow:
 
-- fully verified system settings writes: `/settings` returned 285 settings on the installed 7.1.2 server and a read-only preview succeeded, but no apply was performed
+- fully verified system settings or mailbox writes: reads and previews work, but no apply was performed
 - API token creation: Zammad returns a generated token only once, and this MCP has no secure one-time delivery surface; metadata read and staged revocation are available
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
-- inbound mailbox configuration: no documented, version-pinned REST contract was found
 - unrestricted object manager migrations
 
 New capabilities should receive dedicated workflows with defined permissions, validation and side effects.
@@ -206,6 +208,7 @@ The objective is reliable automation.
 - [Zammad REST API](https://docs.zammad.org/en/latest/api/intro.html)
 - [Object Manager API](https://docs.zammad.org/en/latest/api/object.html)
 - [Email Notification API](https://docs.zammad.org/en/pre-release/api/email-notification.html)
+- [Zammad 7.1.2 email channel routes](https://github.com/zammad/zammad/blob/7.1.2/config/routes/channel_email.rb)
 
 See `ADMIN_COVERAGE.md` for detailed coverage information.
 

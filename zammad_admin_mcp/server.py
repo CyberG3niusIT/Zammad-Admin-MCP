@@ -53,6 +53,13 @@ _RESOURCES: dict[str, Resource] = {
     "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
     "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update"}), risk="Schema changes can affect stored data and require a separate migration/restart workflow.", high_impact=True),
     "user_access_tokens": Resource("/user_access_token", operations=frozenset({"delete"}), risk="Revokes an API token immediately and may lock out integrations.", high_impact=True),
+    "email_channels": Resource(
+        "/channels_email",
+        operations=frozenset({"enable", "disable", "delete", "reassign"}),
+        risk="Changes or stops an inbound mailbox; email polling and ticket creation may be affected.",
+        high_impact=True,
+        item=False,
+    ),
     # Zammad's admin UI uses the Settings REST controller for configuration forms.
     # Restrict writes to a setting's current value; do not expose an arbitrary route.
     "settings": Resource("/settings", operations=frozenset({"update"}), risk="May change authentication, integrations, security, or service behavior.", high_impact=True),
@@ -62,6 +69,11 @@ _RESOURCES: dict[str, Resource] = {
 _SPECIAL_CHANNEL = "email_notification"
 _SPECIAL_PATH = "/channels_email_notification"
 _SPECIAL_READ_PATH = "/channels_email"
+_EMAIL_ACCOUNT_RESOURCE = "email_account"
+_EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
+_EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
+_EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
+_EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
 _SECRET_WORDS = {"password", "pass", "pw", "secret", "token", "credential", "authorization"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
@@ -125,6 +137,44 @@ def _scrub(value: Any) -> Any:
     return value
 
 
+def _materialize_secret_values(value: Any) -> tuple[Any, Any]:
+    """Resolve explicit process-environment references without putting secrets in tool arguments."""
+    if isinstance(value, Mapping) and set(value) == {"$secret_env"}:
+        env_name = value["$secret_env"]
+        if not isinstance(env_name, str) or not re.fullmatch(r"(?:ZAMMAD|MCP)_SECRET_[A-Z0-9_]+", env_name):
+            raise ValueError("Secret references must name a ZAMMAD_SECRET_* or MCP_SECRET_* environment variable")
+        secret = os.environ.get(env_name)
+        if not secret:
+            raise ValueError(f"The referenced secret environment variable {env_name} is not configured")
+        return secret, "[SECRET PROVIDED BY PROCESS ENVIRONMENT]"
+    if isinstance(value, Mapping):
+        resolved: dict[str, Any] = {}
+        preview: dict[str, Any] = {}
+        for key, item in value.items():
+            resolved_item, preview_item = _materialize_secret_values(item)
+            if (
+                _is_secret_field(str(key), item)
+                and item not in (None, "", False)
+                and not isinstance(item, Mapping)
+            ):
+                raise ValueError(f"Secret field {key!r} must use a secure environment reference, not an inline value")
+            resolved[str(key)] = resolved_item
+            preview[str(key)] = preview_item
+        return resolved, preview
+    if isinstance(value, list):
+        pairs = [_materialize_secret_values(item) for item in value]
+        return [x[0] for x in pairs], [x[1] for x in pairs]
+    return value, value
+
+
+def _validate_setting_secret_reference(data: Mapping[str, Any]) -> None:
+    setting_name = data.get("name")
+    value = data.get("state_current", {}).get("value") if isinstance(data.get("state_current"), Mapping) else None
+    if isinstance(setting_name, str) and _is_secret_field(setting_name, value) and not isinstance(value, Mapping):
+        if value not in (None, ""):
+            raise ValueError("Secret settings must use a secure environment reference, not an inline value")
+
+
 def _json(value: Any) -> str:
     return json.dumps(_scrub(value), ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -143,7 +193,11 @@ def _resource(resource: str) -> Resource:
 
 async def _request(method: str, path: str, payload: Any = None, params: dict[str, int] | None = None) -> Any:
     # Defense in depth: only fixed registered collection/item routes are accepted.
-    allowed = {"/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, "/roles?expand=true"}
+    allowed = {
+        "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
+        _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
+    }
+    email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     for item in _RESOURCES.values():
         allowed.add(item.path)
     item_path = any(
@@ -154,7 +208,7 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
-    if path not in allowed and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
+    if path not in allowed and not email_group_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
@@ -190,6 +244,8 @@ async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
     return _json({name: {"operations": sorted(spec.operations), "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
         _SPECIAL_CHANNEL: {"operations": ["configure"], "risk": "POST sends a real test email and saves the active notification channel."},
+        _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
+        "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists metadata; writes change inbound mailbox state and can alter ticket creation."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "knowledge_base_categories": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
@@ -204,7 +260,7 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if isinstance(per_page, bool) or not 1 <= per_page <= 100:
         raise ValueError("per_page must be between 1 and 100")
     params = {"page": page, "per_page": per_page}
-    if resource == _SPECIAL_CHANNEL:
+    if resource in {_SPECIAL_CHANNEL, "email_channels"}:
         return _json(await _get(_SPECIAL_READ_PATH, params))
     spec = _resource(resource)
     return _json(await _get(spec.path, params))
@@ -268,7 +324,7 @@ async def zammad_get_knowledge_base_record(
 
 
 async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any:
-    if resource == _SPECIAL_CHANNEL:
+    if resource in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
         return await _get(_SPECIAL_READ_PATH)
     if resource == "__knowledge_base_settings__":
         return await _get(f"/knowledge_bases/{_validate_id(object_id)}")
@@ -390,6 +446,52 @@ def _merge_preview(before: Any, patch: Mapping[str, Any]) -> Any:
     return merged
 
 
+def _email_account_preview(before: Any, data: Mapping[str, Any]) -> dict[str, Any]:
+    channel_id = data.get("channel_id")
+    assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+    channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+    current = None
+    if channel_id is not None and isinstance(channel_assets, Mapping):
+        current = channel_assets.get(str(channel_id), channel_assets.get(channel_id))
+    summary = {
+        "account_channel_ids": before.get("account_channel_ids", []) if isinstance(before, Mapping) else [],
+        "notification_channel_ids": before.get("notification_channel_ids", []) if isinstance(before, Mapping) else [],
+        "current_channel": current,
+    }
+    return {"before": summary, "after": dict(data)}
+
+
+def _validate_email_account_payload(data: Any) -> None:
+    if not isinstance(data, dict):
+        raise ValueError("email_account configure requires a JSON object")
+    required = {"inbound", "outbound", "group_id"}
+    allowed = required | {"channel_id", "email", "meta", "group_email_address", "group_email_address_id", "subject"}
+    if not required.issubset(data) or set(data) - allowed:
+        raise ValueError("email_account requires inbound, outbound, and group_id; only documented channel fields are accepted")
+    _validate_id(data["group_id"])
+    if data.get("channel_id") is not None:
+        _validate_id(data["channel_id"])
+    for direction in ("inbound", "outbound"):
+        config = data[direction]
+        if not isinstance(config, dict) or set(config) != {"adapter", "options"}:
+            raise ValueError(f"{direction} must contain exactly adapter and options")
+        if not isinstance(config.get("adapter"), str) or not config["adapter"].strip():
+            raise ValueError(f"{direction}.adapter must be a non-empty string")
+        if not isinstance(config.get("options"), dict):
+            raise ValueError(f"{direction}.options must be a JSON object")
+    meta = data.get("meta")
+    if not isinstance(meta, dict) or not isinstance(meta.get("email"), str) or not isinstance(meta.get("realname"), str):
+        raise ValueError("meta must include email and realname strings")
+    if data.get("email", meta["email"]) != meta["email"]:
+        raise ValueError("email and meta.email must match")
+    if data.get("group_email_address") is not None and not isinstance(data["group_email_address"], bool):
+        raise ValueError("group_email_address must be a boolean")
+    if data.get("group_email_address_id") is not None:
+        _validate_id(data["group_email_address_id"])
+    if data.get("subject") is not None and not isinstance(data["subject"], str):
+        raise ValueError("subject must be a string")
+
+
 def _expire_plans(now: float) -> None:
     for key in [k for k, v in _PLANS.items() if v["expires_at"] <= now]:
         _PLANS.pop(key, None)
@@ -405,7 +507,7 @@ async def _clean_expired_plans() -> None:
 @mcp.tool()
 async def zammad_prepare_admin_change(
     resource: str,
-    operation: Literal["create", "update", "delete", "configure"],
+    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign"],
     data: dict[str, Any] | None = None,
     object_id: int | None = None,
     acknowledge_high_impact: bool = False,
@@ -414,6 +516,9 @@ async def zammad_prepare_admin_change(
 
     After showing the preview, obtain explicit user approval in conversation before calling
     zammad_apply_admin_change. The MCP host must not treat the plan identifier as approval.
+    Secret values must be supplied by a process environment reference, for example
+    {"$secret_env": "ZAMMAD_SECRET_IMAP_PASSWORD"}; inline secret literals are rejected.
+    email_account configure plans send a test message and start mailbox polling when applied.
     """
     global _PLAN_CLEANER
     if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
@@ -425,6 +530,30 @@ async def zammad_prepare_admin_change(
         if not isinstance(data, dict) or not {"adapter", "options"}.issubset(data):
             raise ValueError("email_notification requires adapter and options")
         spec = Resource(_SPECIAL_PATH, frozenset({"configure"}), "Sends a real test email and saves the active notification configuration.", True, False)
+    elif resource == _EMAIL_ACCOUNT_RESOURCE:
+        if operation != "configure":
+            raise ValueError("email_account supports only the configure operation")
+        if object_id is not None:
+            raise ValueError("email_account uses channel_id inside data and does not accept object_id")
+        _validate_email_account_payload(data)
+        spec = Resource(
+            _EMAIL_ACCOUNT_VERIFY_PATH,
+            frozenset({"configure"}),
+            "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching.",
+            True,
+            False,
+        )
+    elif resource == "email_channels":
+        spec = _resource(resource)
+        if operation not in spec.operations:
+            raise ValueError("email_channels supports enable, disable, delete, or reassign")
+        object_id = _validate_id(object_id)
+        if operation == "reassign":
+            if not isinstance(data, dict) or set(data) != {"group_id"}:
+                raise ValueError("reassign requires exactly a group_id field")
+            _validate_id(data["group_id"])
+        elif data:
+            raise ValueError(f"{operation} does not accept data")
     else:
         spec = _resource(resource)
         if operation not in spec.operations:
@@ -439,6 +568,7 @@ async def zammad_prepare_admin_change(
             state_current = data.get("state_current")
             if not isinstance(state_current, dict) or set(state_current) != {"value"}:
                 raise ValueError("settings state_current must contain exactly one value field")
+            _validate_setting_secret_reference(data)
         if operation == "delete" and data:
             raise ValueError("delete does not accept data")
         if operation == "create" and object_id is not None:
@@ -448,23 +578,64 @@ async def zammad_prepare_admin_change(
     if spec.high_impact and not acknowledge_high_impact:
         raise ValueError("This change is high impact; inspect the resource risk and set acknowledge_high_impact=true to prepare it")
 
+    data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
+
     before = await _snapshot(resource, operation, object_id)
+    dependencies: list[dict[str, str]] = []
+    group_id = None
+    if resource == _EMAIL_ACCOUNT_RESOURCE:
+        group_id = data["group_id"]
+    elif resource == "email_channels" and operation == "reassign":
+        group_id = data["group_id"]
+    if group_id is not None:
+        group_before = await _get(f"/groups/{_validate_id(group_id)}")
+        dependencies.append({"path": f"/groups/{group_id}", "fingerprint": _digest(group_before)})
+    if resource == _EMAIL_ACCOUNT_RESOURCE and data.get("channel_id") is not None:
+        current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
+        if data["channel_id"] not in current_ids:
+            raise ValueError("channel_id must identify an existing inbound email channel")
+    if resource == _EMAIL_ACCOUNT_RESOURCE and data.get("group_email_address_id") is not None:
+        email_ids = before.get("email_address_ids", []) if isinstance(before, Mapping) else []
+        if data["group_email_address_id"] not in email_ids:
+            raise ValueError("group_email_address_id must identify an existing sender address")
+    if resource == "email_channels":
+        current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
+        if object_id not in current_ids:
+            raise ValueError("object_id must identify an existing inbound email channel")
     if operation in {"update", "delete"} and not isinstance(before, Mapping):
         raise RuntimeError("The Zammad API did not return an object snapshot")
     if resource == "settings" and data.get("name") != before.get("name"):
         raise ValueError("settings name must match the selected setting ID")
     if operation == "create":
-        after = data
+        after = preview_data
+    elif resource == _EMAIL_ACCOUNT_RESOURCE:
+        preview = _email_account_preview(before, preview_data)
+        before_preview = preview["before"]
+        after = preview["after"]
+    elif resource == "email_channels":
+        preview = _email_account_preview(before, {"channel_id": object_id})
+        before_preview = preview["before"]
+        if operation == "enable":
+            after = {"id": object_id, "active": True}
+        elif operation == "disable":
+            after = {"id": object_id, "active": False}
+        elif operation == "reassign":
+            after = {"id": object_id, "group_id": preview_data["group_id"]}
+        else:
+            after = None
     elif operation in {"update", "configure"}:
-        after = _merge_preview(before, data or {})
+        after = _merge_preview(before, preview_data or {})
     else:
         after = None
+    if resource not in {_EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
+        before_preview = before
 
     plan_id = secrets.token_urlsafe(24)
     now = time.time()
     plan = {
         "resource": resource, "operation": operation, "object_id": object_id,
         "data": data, "fingerprint": _digest(before), "before": before,
+        "dependencies": dependencies,
         "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": spec.high_impact,
     }
     async with _PLAN_LOCK:
@@ -482,7 +653,7 @@ async def zammad_prepare_admin_change(
         "expires_in_seconds": _PLAN_TTL_SECONDS,
         "snapshot_fingerprint": plan["fingerprint"],
         "risk": spec.risk,
-        "before": before,
+        "before": before_preview,
         "after": after,
         "approval_required": True,
         "note": "No write was performed. A fresh read-before-write check runs during apply; use apply only after explicit user approval.",
@@ -507,11 +678,29 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
         if _digest(current) != plan["fingerprint"]:
             raise RuntimeError("The resource changed after preview; prepare a new plan")
+        for dependency in plan.get("dependencies", []):
+            dependency_current = await _get(dependency["path"])
+            if _digest(dependency_current) != dependency["fingerprint"]:
+                raise RuntimeError("A related resource changed after preview; prepare a new plan")
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
         if resource == _SPECIAL_CHANNEL:
             result = await _request("POST", _SPECIAL_PATH, data)
+        elif resource == _EMAIL_ACCOUNT_RESOURCE:
+            result = await _request("POST", _EMAIL_ACCOUNT_VERIFY_PATH, data)
+        elif resource == "email_channels":
+            channel_id = plan["object_id"]
+            if operation == "enable":
+                result = await _request("POST", _EMAIL_CHANNEL_ENABLE_PATH, {"id": channel_id})
+            elif operation == "disable":
+                result = await _request("POST", _EMAIL_CHANNEL_DISABLE_PATH, {"id": channel_id})
+            elif operation == "delete":
+                result = await _request("DELETE", _SPECIAL_READ_PATH, {"id": channel_id})
+            elif operation == "reassign":
+                result = await _request("POST", f"{_EMAIL_CHANNEL_GROUP_PATH}/{channel_id}", data)
+            else:
+                raise ValueError("Unsupported email channel operation")
         elif resource == "__knowledge_base_settings__":
             result = await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
         elif resource == "__knowledge_base_record__":

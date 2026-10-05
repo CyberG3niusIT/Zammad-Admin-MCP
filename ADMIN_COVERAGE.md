@@ -4,7 +4,7 @@ Goal: expose the full Zammad administration surface for reading and configuratio
 
 ## Current source tools
 
-The original live tool registry was read-only: server version, groups, roles, expanded roles, calendars, SLAs, ticket states, and triggers. The local source now also defines a generic but fixed-resource reader and staged create/update/delete tools for the resources below. This source change has not yet been loaded into the running MCP process.
+The original live tool registry was read-only: server version, groups, roles, expanded roles, calendars, SLAs, ticket states, and triggers. The running MCP now exposes a fixed-resource reader and staged configuration tools for the resources below.
 
 ## Coverage inventory
 
@@ -17,7 +17,7 @@ The original live tool registry was read-only: server version, groups, roles, ex
 | Calendars and SLAs | Read + staged CRUD | Staged CRUD | Validate cross-resource dependencies and time-zone/business-hour payloads. |
 | Triggers, macros, overviews, text modules, templates, core workflows, report profiles | Read + staged CRUD | Staged CRUD | Trigger bodies can send mail or invoke external services in future events; every change requires explicit approval. `/schedulers` returned HTTP 404 on the installed 7.1.2 instance. |
 | Object manager | Read + staged create/update | Staged create/update | High risk: schema changes can affect data. Migration endpoint and restart are deliberately not exposed. |
-| Outbound sender addresses and notification SMTP | Read + staged CRUD / special configure | Staged writes | Notification configure sends a real test email while saving. Mailbox/inbound channel configuration is not implemented: the public API docs distinguish it from notification mail but do not document a stable endpoint contract. |
+| Outbound sender addresses, notification SMTP, inbound mailbox | Read + staged CRUD / special configure | Staged configure, enable, disable, delete, and group reassignment | `email_account` uses `POST /channels_email_verify`: verifies inbound/outbound, sends a test message, saves on success, and begins mail fetching. High impact; no apply was performed. Routes verified against exact Zammad 7.1.2 source. |
 | Webhooks | Read + staged CRUD | Staged CRUD | Secret fields are redacted; changes can enable future external calls. |
 | Authentication, SSO/LDAP, API tokens | Partial (user records and token metadata) | Staged update of a specific setting; token revocation staged | Zammad's Settings REST controller is used by the Admin UI, but has no current official API contract in the public docs; `/settings` must be verified live against 7.1.2 before relying on it. Updates require matching setting name and ID and replace only `state_current.value`. Token creation returns a generated one-time secret that cannot be retrieved later; no secure one-time delivery channel is implemented. |
 | Knowledge base | Read by KB ID, permissions, answer and category records | Staged update/CRUD | Uses dedicated nested routes and requires caller-supplied IDs. The current instance's KB 1 has no answer/category records. Public content writes require explicit confirmation. |
@@ -29,7 +29,7 @@ Version returned `7.1.2-bbc6460a.docker`. These GET checks streamed and discarde
 
 ## Remaining scope gaps
 
-The MCP does not yet provide a complete replacement for every Admin UI function. In particular, there is no documented, version-pinned REST contract for LDAP/SSO provider setup or inbound mailbox channels. These cannot be safely completed through guessed endpoints or a general Rails-console bridge. A fixed `/settings` resource has been added based on the Settings REST controller used by the Admin UI, but it is not considered verified until its read/preview/apply behavior is checked against the installed 7.1.2 instance. The generic CRUD registry covers the API-backed resources listed above; each route still needs live verification before it can be described as fully supported.
+The MCP does not yet provide a complete replacement for every Admin UI function. A fixed `/settings` resource supports reads and staged updates; route read and preview were verified against the installed 7.1.2 instance, but apply was not performed. LDAP/SSO entries are included in the settings list, but the side effects and exact setting payloads have not been separately validated. Email mailbox route and controller behavior are verified against exact 7.1.2 source, while applying a configuration remains untested. No arbitrary Rails-console bridge is exposed.
 
 Access-token creation remains unavailable because Zammad returns the newly generated secret once and cannot retrieve it again. The current secret-handling policy does not provide a secure one-time delivery surface; token metadata can be read and token revocation is staged.
 
@@ -53,3 +53,5 @@ Official documentation describes a broad REST API, but the `latest` and `pre-rel
 - Roles: https://docs.zammad.org/en/pre-release/api/role.html
 - Triggers: https://docs.zammad.org/en/pre-release/api/trigger.html
 - Outbound email: https://docs.zammad.org/en/pre-release/api/email-notification.html
+- Zammad 7.1.2 email channel routes: https://github.com/zammad/zammad/blob/7.1.2/config/routes/channel_email.rb
+- Zammad 7.1.2 email channel controller: https://github.com/zammad/zammad/blob/7.1.2/app/controllers/channels_email_controller.rb
