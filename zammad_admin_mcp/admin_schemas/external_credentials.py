@@ -35,6 +35,8 @@ def validate_payload(operation: str, data: Any) -> None:
             raise ValueError(f"credentials replacement must include {secret_field}")
         if data.get("name") == "facebook" and not {"application_id", "application_secret"}.issubset(credentials):
             raise ValueError("Facebook credentials require application_id and application_secret")
+        if data.get("name") == "google" and not {"client_id", "client_secret"}.issubset(credentials):
+            raise ValueError("Google credentials require client_id and client_secret")
         if data.get("name") in {"microsoft365", "microsoft_graph"} and not {"client_id", "client_secret"}.issubset(credentials):
             raise ValueError("Microsoft credentials require client_id and client_secret")
         for key, value in credentials.items():

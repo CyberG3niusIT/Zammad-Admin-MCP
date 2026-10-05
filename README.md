@@ -121,6 +121,11 @@ Supported workflows include:
 - staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
 - jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
+- existing Microsoft 365 and Microsoft Graph mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; probes return only status and message counts, while OAuth account linking remains in Zammad's browser flow
+- existing Google mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
+- Google and Microsoft 365 channels with a stored migration backup can be rolled back through a staged plan that previews restored metadata without showing the saved configuration
+- Web channel settings can be listed by Zammad area (for example `CustomerWeb::Base`) and changed through the staged settings workflow
+- Product-logo updates use a staged upload with image type and size validation; previews and apply responses omit image data
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 

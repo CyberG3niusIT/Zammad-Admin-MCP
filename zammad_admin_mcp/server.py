@@ -29,6 +29,9 @@ from zammad_admin_mcp.security import _validate_setting_secret_reference
 from zammad_admin_mcp.security import _validate_token_create_payload
 from zammad_admin_mcp.admin_schemas.chats import validate_payload as validate_chat_payload
 from zammad_admin_mcp.admin_schemas.facebook_channels import validate_payload as validate_facebook_channel_payload
+from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_configure_payload as validate_oauth_email_configure_payload
+from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_group_payload as validate_oauth_email_group_payload
+from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_probe_payload as validate_oauth_email_probe_payload
 from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
 from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
@@ -41,6 +44,7 @@ from zammad_admin_mcp.admin_schemas.ldap_sources import retain_existing_secret a
 from zammad_admin_mcp.admin_schemas.ldap_sources import validate_payload as validate_ldap_source_payload
 from zammad_admin_mcp.admin_schemas.postmaster_filters import validate_payload as validate_postmaster_filter_payload
 from zammad_admin_mcp.admin_schemas.public_links import validate_payload as validate_public_link_payload
+from zammad_admin_mcp.admin_schemas.product_logo import validate_payload as validate_product_logo_payload
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -84,6 +88,21 @@ _RESOURCES: dict[str, Resource] = {
         risk="Changes or removes an existing Facebook page integration.",
         high_impact=True, item=False,
     ),
+    "google_channels": Resource(
+        "/channels_google", operations=frozenset({"delete", "enable", "disable", "reassign", "configure", "probe", "rollback_migration"}),
+        risk="Probes read the mailbox and refresh OAuth access; configuration resets status and clears logs, archive settings affect later imports, and deletion also removes the associated email address.",
+        high_impact=True, item=False,
+    ),
+    "microsoft365_channels": Resource(
+        "/channels_microsoft365", operations=frozenset({"delete", "enable", "disable", "reassign", "configure", "probe", "rollback_migration"}),
+        risk="Probes read the mailbox and refresh OAuth access; configuration resets status and clears logs, archive settings affect later imports, and deletion also removes the associated email address.",
+        high_impact=True, item=False,
+    ),
+    "microsoft_graph_channels": Resource(
+        "/channels/admin/microsoft_graph", operations=frozenset({"delete", "enable", "disable", "reassign", "configure", "probe"}),
+        risk="Probes read the mailbox and refresh OAuth access; configuration resets status and clears logs, and archive settings affect later imports.",
+        high_impact=True, item=False,
+    ),
     "report_profiles": Resource("/report_profiles"),
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
@@ -105,7 +124,8 @@ _RESOURCES: dict[str, Resource] = {
         high_impact=True,
         item=False,
     ),
-    "settings": Resource("/settings", operations=frozenset({"update"}), risk="May change authentication, integrations, security, or service behavior.", high_impact=True),
+    "settings": Resource("/settings", operations=frozenset({"update", "reset"}), risk="May change authentication, integrations, security, or service behavior.", high_impact=True),
+    "product_logo": Resource("/settings", operations=frozenset({"update"}), risk="Replaces the product logo displayed in Zammad, including its sign-in page.", high_impact=True),
     "jobs": Resource("/jobs", risk="Scheduled jobs can change tickets, users, or organizations when they run.", high_impact=True),
     "public_links": Resource("/public_links", risk="Changes public login, signup, or password-reset links; inspect destination and screen before approval.", high_impact=True),
     "postmaster_filters": Resource("/postmaster_filters", risk="Changes inbound email processing, ticket routing, and actions.", high_impact=True),
@@ -290,12 +310,25 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
         "/channels_telegram_enable", "/channels_telegram_disable",
         "/channels_facebook_enable", "/channels_facebook_disable",
+        "/channels_microsoft365_enable", "/channels_microsoft365_disable",
+        "/channels_google_rollback_migration", "/channels_microsoft365_rollback_migration",
         "/channels/admin/whatsapp/preload",
         "/integration/ldap/discover", "/integration/ldap/bind",
         "/integration/ldap/job_try", "/integration/ldap/job_start",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
+    microsoft365_group_path = bool(re.fullmatch(r"/channels_microsoft365_group/\d+", path))
+    microsoft_graph_action_path = bool(re.fullmatch(r"/channels/admin/microsoft_graph/\d+/(?:enable|disable)", path))
+    microsoft_graph_group_path = bool(re.fullmatch(r"/channels/admin/microsoft_graph/group/\d+", path))
+    microsoft365_verify_path = bool(re.fullmatch(r"/channels_microsoft365_verify/\d+", path))
+    microsoft_graph_verify_path = bool(re.fullmatch(r"/channels/admin/microsoft_graph/verify/\d+", path))
+    microsoft365_inbound_path = bool(re.fullmatch(r"/channels_microsoft365_inbound/\d+", path))
+    microsoft_graph_inbound_path = bool(re.fullmatch(r"/channels/admin/microsoft_graph/inbound/\d+", path))
+    google_action_path = path in {"/channels_google_enable", "/channels_google_disable"}
+    google_group_path = bool(re.fullmatch(r"/channels_google_group/\d+", path))
+    google_verify_path = bool(re.fullmatch(r"/channels_google_verify/\d+", path))
+    google_inbound_path = bool(re.fullmatch(r"/channels_google_inbound/\d+", path))
     for item in _RESOURCES.values():
         allowed.add(item.path)
     item_path = any(
@@ -306,7 +339,9 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
-    if path not in allowed and not email_group_path and not whatsapp_action_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
+    settings_image_path = bool(re.fullmatch(r"/settings/image/\d+", path))
+    settings_reset_path = bool(re.fullmatch(r"/settings/reset/\d+", path))
+    if path not in allowed and not email_group_path and not whatsapp_action_path and not microsoft365_group_path and not microsoft_graph_action_path and not microsoft_graph_group_path and not microsoft365_verify_path and not microsoft_graph_verify_path and not microsoft365_inbound_path and not microsoft_graph_inbound_path and not google_action_path and not google_group_path and not google_verify_path and not google_inbound_path and not settings_image_path and not settings_reset_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
@@ -340,12 +375,16 @@ async def zammad_list_admin_resources() -> str:
 
 
 @mcp.tool()
-async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int = 100) -> str:
-    """List one page from a fixed allowlisted Zammad admin resource."""
+async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int = 100, area: str | None = None) -> str:
+    """List a fixed admin resource, optionally filtering settings by Zammad area."""
     if isinstance(page, bool) or page < 1:
         raise ValueError("page must be a positive integer")
     if isinstance(per_page, bool) or not 1 <= per_page <= 100:
         raise ValueError("per_page must be between 1 and 100")
+    if area is not None and resource != "settings":
+        raise ValueError("area is supported only for settings")
+    if area is not None and (not isinstance(area, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]{1,120}", area)):
+        raise ValueError("area must be a valid Zammad settings area name")
     params = {"page": page, "per_page": per_page}
     if resource in {_SPECIAL_CHANNEL, "email_channels", _MESSAGING_CHANNELS_RESOURCE}:
         channel_data = await _get(_SPECIAL_READ_PATH, params)
@@ -356,10 +395,17 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
     if resource == "facebook_channels":
         return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
+    if resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
+    if resource == "product_logo":
+        settings = _project_settings(await _get("/settings"))
+        return _json([item for item in settings if isinstance(item, Mapping) and item.get("name") == "product_logo"] if isinstance(settings, list) else [])
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
         result = _project_settings(result)
+        if area is not None:
+            result = [item for item in result if isinstance(item, Mapping) and item.get("area") == area] if isinstance(result, list) else []
     return _json(result)
 
 
@@ -391,7 +437,7 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
         raise ValueError("This resource does not support item reads")
     object_id = _validate_id(object_id)
     result = await _get(f"{spec.path}/{object_id}")
-    if resource == "settings":
+    if resource in {"settings", "product_logo"}:
         result = _project_settings(result)
     return _json(result)
 
@@ -574,6 +620,18 @@ async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any
         channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
         channel = channel_assets.get(str(_validate_id(object_id))) if isinstance(channel_assets, Mapping) else None
         return {"assets": {"Channel": {str(object_id): channel}}} if isinstance(channel, Mapping) else {"assets": {"Channel": {}}}
+    if resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        collection = await _get(_resource(resource).path)
+        assets = collection.get("assets", {}) if isinstance(collection, Mapping) else {}
+        channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+        channel = channel_assets.get(str(_validate_id(object_id))) if isinstance(channel_assets, Mapping) else None
+        email_assets = assets.get("EmailAddress", {}) if isinstance(assets, Mapping) else {}
+        related_addresses = {
+            str(address_id): address
+            for address_id, address in email_assets.items()
+            if isinstance(address, Mapping) and str(address.get("channel_id")) == str(object_id)
+        } if isinstance(email_assets, Mapping) else {}
+        return {"assets": {"Channel": {str(object_id): channel}, "EmailAddress": related_addresses}} if isinstance(channel, Mapping) else {"assets": {"Channel": {}}}
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         return await _get(_resource(resource).path)
     if resource == "__knowledge_base_settings__":
@@ -899,7 +957,7 @@ async def _clean_expired_plans() -> None:
 @mcp.tool()
 async def zammad_prepare_admin_change(
     resource: str,
-    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign", "test", "preload"],
+    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign", "test", "preload", "rollback_migration", "reset"],
     data: dict[str, Any] | None = None,
     object_id: int | None = None,
     acknowledge_high_impact: bool = False,
@@ -955,6 +1013,28 @@ async def zammad_prepare_admin_change(
             validate_facebook_channel_payload(data)
         elif data:
             raise ValueError(f"{operation} does not accept data")
+    elif resource == "product_logo":
+        spec = _resource(resource)
+        if operation != "update":
+            raise ValueError("product_logo supports only update")
+        object_id = _validate_id(object_id)
+        if not isinstance(data, dict) or not data:
+            raise ValueError("product_logo update requires image data")
+    elif resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        spec = _resource(resource)
+        if operation not in spec.operations:
+            raise ValueError(f"{resource} supports delete, enable, disable, reassign, configure, probe, or migration rollback")
+        object_id = _validate_id(object_id)
+        if operation == "reassign":
+            data = {"group_id": validate_oauth_email_group_payload(data)}
+        elif operation == "configure":
+            data = validate_oauth_email_configure_payload(resource, data)
+        elif operation == "probe":
+            data = validate_oauth_email_probe_payload(resource, data)
+        elif operation == "rollback_migration" and data:
+            raise ValueError("rollback_migration does not accept data")
+        elif data:
+            raise ValueError(f"{operation} does not accept data")
     elif resource in _MESSAGE_CHANNEL_RESOURCES:
         spec = _resource(resource)
         if operation not in spec.operations:
@@ -976,6 +1056,11 @@ async def zammad_prepare_admin_change(
             raise ValueError(f"Operation {operation!r} is not allowed for resource {resource!r}")
         if operation == "configure":
             raise ValueError("configure is only valid for email_notification")
+        if resource == "settings" and operation == "reset":
+            if data not in (None, {}):
+                raise ValueError("settings reset does not accept data")
+            data = {}
+            object_id = _validate_id(object_id)
         if operation in {"create", "update"} and (not isinstance(data, dict) or not data):
             raise ValueError("create and update require a non-empty JSON object in data")
         if resource == "settings" and operation == "update":
@@ -1011,6 +1096,9 @@ async def zammad_prepare_admin_change(
     elif resource == "external_credentials" and operation in {"create", "update"}:
         validate_external_credentials_payload(operation, data)
         data, preview_data = materialize_external_credentials(data)
+    elif resource == "product_logo" and operation == "update":
+        data, _ = _materialize_secret_values(data)
+        preview_data = validate_product_logo_payload(data)
     else:
         data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
     if resource == "jobs" and operation in {"create", "update"}:
@@ -1025,6 +1113,13 @@ async def zammad_prepare_admin_change(
         validate_postmaster_filter_payload(operation, data)
 
     before = ldap_before if ldap_before is not None else await _snapshot(resource, operation, object_id)
+    if resource == "settings" and operation == "reset":
+        if not isinstance(before, Mapping) or not isinstance(before.get("name"), str):
+            raise RuntimeError("The Zammad API did not return a setting snapshot")
+        data = {"name": before["name"]}
+        preview_data = {"name": before["name"]}
+    if resource == "product_logo" and (not isinstance(before, Mapping) or before.get("name") != "product_logo"):
+        raise ValueError("object_id must identify the product_logo setting")
     facebook_requested_pages: Mapping[str, Any] | None = None
     facebook_channel: Mapping[str, Any] | None = None
     if resource == "facebook_channels":
@@ -1054,6 +1149,46 @@ async def zammad_prepare_admin_change(
             facebook_requested_pages = requested_pages
             data = {"id": object_id, "options": current_options}
             preview_data = {"pages": requested_pages}
+    if resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+        channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+        oauth_email_channel = channel_assets.get(str(object_id)) if isinstance(channel_assets, Mapping) else None
+        expected_area = {
+            "google_channels": "Google::Account",
+            "microsoft365_channels": "Microsoft365::Account",
+            "microsoft_graph_channels": "MicrosoftGraph::Account",
+        }[resource]
+        if not isinstance(oauth_email_channel, Mapping) or oauth_email_channel.get("area") != expected_area:
+            raise ValueError("object_id must identify an existing channel of the selected OAuth email type")
+        if operation == "rollback_migration":
+            options = oauth_email_channel.get("options", {})
+            backup = options.get("backup_imap_classic") if isinstance(options, Mapping) else None
+            attributes = backup.get("attributes") if isinstance(backup, Mapping) else None
+            if resource == "microsoft_graph_channels" or not isinstance(attributes, Mapping):
+                raise ValueError("object_id must identify a Google or Microsoft 365 channel with an IMAP migration backup")
+            rollback_area = attributes.get("area")
+            if rollback_area != "Email::Account":
+                raise ValueError("The stored migration backup does not identify a legacy inbound email channel")
+            rollback_backup = backup
+        if operation == "configure" and data.get("group_email_address") is True:
+            email_assets = assets.get("EmailAddress", {}) if isinstance(assets, Mapping) else {}
+            associated_email = None
+            address_id = data.get("group_email_address_id")
+            if not isinstance(email_assets, Mapping):
+                raise ValueError("The Zammad API did not return associated email addresses")
+            if address_id is not None:
+                associated_email = email_assets.get(str(address_id))
+                if not isinstance(associated_email, Mapping) or str(associated_email.get("channel_id")) != str(object_id):
+                    raise ValueError("group_email_address_id must identify an email address attached to this channel")
+            elif not any(isinstance(entry, Mapping) for entry in email_assets.values()):
+                raise ValueError("This channel has no associated email address to assign to the destination group")
+            if address_id is not None and not isinstance(associated_email, Mapping):
+                raise ValueError("This channel has no associated email address to assign to the destination group")
+            preview_data = dict(preview_data)
+            preview_data["group_sender_address"] = (
+                associated_email.get("email") if associated_email is not None
+                else "channel-associated address (selected by Zammad)"
+            )
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         before_preview = _project_messaging_channels(before)
         if operation in {"create", "update"}:
@@ -1078,6 +1213,42 @@ async def zammad_prepare_admin_change(
         before_preview = _project_messaging_channels(before)
         if operation == "update":
             after = {"id": object_id, "page_group_assignments": preview_data["pages"]}
+        elif operation in {"enable", "disable"}:
+            after = {"id": object_id, "active": operation == "enable"}
+        else:
+            after = None
+    elif resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        before_preview = _project_messaging_channels(before)
+        if operation == "rollback_migration":
+            channel = next(iter(before.get("assets", {}).get("Channel", {}).values()), {})
+            before_preview = {
+                "id": object_id,
+                "area": channel.get("area") if isinstance(channel, Mapping) else None,
+                "active": channel.get("active") if isinstance(channel, Mapping) else None,
+                "migration_backup_available": True,
+            }
+            backup_attributes = rollback_backup["attributes"]
+            after = {
+                "id": object_id,
+                "restore_area": backup_attributes["area"],
+                "restore_status": {key: backup_attributes.get(key) for key in ("status_in", "status_out")},
+                "restore_configuration": "stored legacy IMAP snapshot",
+                "secrets_returned": False,
+            }
+        elif operation == "configure":
+            after = {"id": object_id, "requested_settings": preview_data,
+                     "channel_status_after_save": {"status_in": "ok", "status_out": "ok", "logs_cleared": True},
+                     "future_effects": ["Archive settings may change how subsequent mailbox fetching imports messages"]}
+        elif operation == "probe":
+            after = {
+                "id": object_id,
+                "probe": "refresh OAuth access and read the selected mailbox configuration",
+                "request_options": preview_data.get("options", {}),
+                "response_fields": ["success", "content_message_count"],
+                "mail_content_returned": False,
+            }
+        elif operation == "reassign":
+            after = {"id": object_id, "group_id": preview_data["group_id"]}
         elif operation in {"enable", "disable"}:
             after = {"id": object_id, "active": operation == "enable"}
         else:
@@ -1110,6 +1281,25 @@ async def zammad_prepare_admin_change(
             if not isinstance(group_before, Mapping) or group_before.get("active") is not True:
                 raise ValueError(f"Facebook page group_id {group_id} must identify an active group")
             dependencies.append({"path": f"/groups/{group_id}", "fingerprint": _digest(group_before)})
+    if resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"} and operation in {"reassign", "configure"} and "group_id" in preview_data:
+        target_group_id = preview_data["group_id"]
+        group_before = await _get(f"/groups/{target_group_id}")
+        if not isinstance(group_before, Mapping) or group_before.get("active") is not True:
+            raise ValueError(f"group_id {target_group_id} must identify an active group")
+        dependencies.append({"path": f"/groups/{target_group_id}", "fingerprint": _digest(group_before)})
+    if resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"} and operation == "configure":
+        state_id = preview_data.get("options", {}).get("archive_state_id")
+        if state_id is not None:
+            state_before = await _get(f"/ticket_states/{state_id}")
+            if not isinstance(state_before, Mapping) or state_before.get("active") is not True:
+                raise ValueError("archive_state_id must identify an active ticket state")
+            dependencies.append({"path": f"/ticket_states/{state_id}", "fingerprint": _digest(state_before)})
+        address_id = data.get("group_email_address_id")
+        if address_id is not None:
+            address_before = await _get(f"/email_addresses/{address_id}")
+            if not isinstance(address_before, Mapping) or str(address_before.get("channel_id")) != str(object_id):
+                raise ValueError("group_email_address_id must identify an email address attached to this channel")
+            dependencies.append({"path": f"/email_addresses/{address_id}", "fingerprint": _digest(address_before)})
     if resource == _EMAIL_ACCOUNT_RESOURCE and data.get("channel_id") is not None:
         current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
         if data["channel_id"] not in current_ids:
@@ -1130,7 +1320,7 @@ async def zammad_prepare_admin_change(
             raise ValueError("object_id must identify an existing messaging channel")
     if operation in {"update", "delete"} and not isinstance(before, Mapping):
         raise RuntimeError("The Zammad API did not return an object snapshot")
-    if resource == "settings" and data.get("name") != before.get("name"):
+    if resource == "settings" and operation == "update" and data.get("name") != before.get("name"):
         raise ValueError("settings name must match the selected setting ID")
     if resource == "user_access_tokens" and operation == "create":
         available_permissions = [
@@ -1142,10 +1332,57 @@ async def zammad_prepare_admin_change(
             "requested_permissions_are_active": True,
         }
         after = preview_data
+    elif resource == "product_logo":
+        current_value = before.get("state_current", {}) if isinstance(before, Mapping) else {}
+        before_preview = {
+            "id": object_id,
+            "name": "product_logo",
+            "custom_logo_configured": isinstance(current_value, Mapping) and current_value.get("value") not in (None, ""),
+        }
+        after = preview_data
+    elif resource == "settings" and operation == "reset":
+        before_preview = _project_settings(before)
+        after = _project_settings({**before, "state_current": before.get("state_initial")})
     elif resource == "facebook_channels":
         before_preview = _project_messaging_channels(before)
         if operation == "update":
             after = {"id": object_id, "page_group_assignments": preview_data["pages"]}
+        elif operation in {"enable", "disable"}:
+            after = {"id": object_id, "active": operation == "enable"}
+        else:
+            after = None
+    elif resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+        before_preview = _project_messaging_channels(before)
+        if operation == "rollback_migration":
+            channel = next(iter(before.get("assets", {}).get("Channel", {}).values()), {})
+            before_preview = {
+                "id": object_id,
+                "area": channel.get("area") if isinstance(channel, Mapping) else None,
+                "active": channel.get("active") if isinstance(channel, Mapping) else None,
+                "migration_backup_available": True,
+            }
+            backup_attributes = rollback_backup["attributes"]
+            after = {
+                "id": object_id,
+                "restore_area": backup_attributes["area"],
+                "restore_status": {key: backup_attributes.get(key) for key in ("status_in", "status_out")},
+                "restore_configuration": "stored legacy IMAP snapshot",
+                "secrets_returned": False,
+            }
+        elif operation == "configure":
+            after = {"id": object_id, "requested_settings": preview_data,
+                     "channel_status_after_save": {"status_in": "ok", "status_out": "ok", "logs_cleared": True},
+                     "future_effects": ["Archive settings may change how subsequent mailbox fetching imports messages"]}
+        elif operation == "probe":
+            after = {
+                "id": object_id,
+                "probe": "refresh OAuth access and read the selected mailbox configuration",
+                "request_options": preview_data.get("options", {}),
+                "response_fields": ["success", "content_message_count"],
+                "mail_content_returned": False,
+            }
+        elif operation == "reassign":
+            after = {"id": object_id, "group_id": preview_data["group_id"]}
         elif operation in {"enable", "disable"}:
             after = {"id": object_id, "active": operation == "enable"}
         else:
@@ -1177,7 +1414,7 @@ async def zammad_prepare_admin_change(
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", "product_logo", "google_channels", "microsoft365_channels", "microsoft_graph_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
         resource == "user_access_tokens" and operation == "create"
     ):
         before_preview = before
@@ -1281,6 +1518,15 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             result = await _request("POST", _SPECIAL_PATH, data)
         elif resource == _EMAIL_ACCOUNT_RESOURCE:
             result = await _request("POST", _EMAIL_ACCOUNT_VERIFY_PATH, data)
+        elif resource == "product_logo":
+            logo_result = await _request("PUT", f"/settings/image/{plan['object_id']}", data)
+            result = {
+                "stored": isinstance(logo_result, Mapping) and logo_result.get("result") == "ok",
+                "setting": "product_logo",
+                "image_data_returned": False,
+            }
+        elif resource == "settings" and operation == "reset":
+            result = await _request("POST", f"/settings/reset/{plan['object_id']}", {})
         elif resource == "email_channels":
             channel_id = plan["object_id"]
             if operation == "enable":
@@ -1303,6 +1549,69 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 result = await _request("DELETE", "/channels_facebook", {"id": channel_id})
             else:
                 raise ValueError("Unsupported Facebook channel operation")
+        elif resource in {"google_channels", "microsoft365_channels", "microsoft_graph_channels"}:
+            channel_id = plan["object_id"]
+            if resource == "google_channels":
+                if operation in {"enable", "disable"}:
+                    result = await _request("POST", f"/channels_google_{operation}", {"id": channel_id})
+                elif operation == "delete":
+                    result = await _request("DELETE", "/channels_google", {"id": channel_id})
+                elif operation == "reassign":
+                    result = await _request("POST", f"/channels_google_group/{channel_id}", data)
+                elif operation == "configure":
+                    result = await _request("POST", f"/channels_google_verify/{channel_id}", data)
+                elif operation == "probe":
+                    probe_result = await _request("POST", f"/channels_google_inbound/{channel_id}", data)
+                    count = probe_result.get("content_messages") if isinstance(probe_result, Mapping) else None
+                    result = {
+                        "success": isinstance(probe_result, Mapping) and probe_result.get("result") == "ok",
+                        "content_message_count": count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None,
+                        "mail_content_returned": False,
+                    }
+                elif operation == "rollback_migration":
+                    result = await _request("POST", "/channels_google_rollback_migration", {"id": channel_id})
+                else:
+                    raise ValueError("Unsupported Google channel operation")
+            elif resource == "microsoft365_channels":
+                if operation in {"enable", "disable"}:
+                    result = await _request("POST", f"/channels_microsoft365_{operation}", {"id": channel_id})
+                elif operation == "delete":
+                    result = await _request("DELETE", "/channels_microsoft365", {"id": channel_id})
+                elif operation == "reassign":
+                    result = await _request("POST", f"/channels_microsoft365_group/{channel_id}", data)
+                elif operation == "configure":
+                    result = await _request("POST", f"/channels_microsoft365_verify/{channel_id}", data)
+                elif operation == "probe":
+                    probe_result = await _request("POST", f"/channels_microsoft365_inbound/{channel_id}", data)
+                    count = probe_result.get("content_messages") if isinstance(probe_result, Mapping) else None
+                    result = {
+                        "success": isinstance(probe_result, Mapping) and probe_result.get("result") == "ok",
+                        "content_message_count": count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None,
+                        "mail_content_returned": False,
+                    }
+                elif operation == "rollback_migration":
+                    result = await _request("POST", "/channels_microsoft365_rollback_migration", {"id": channel_id})
+                else:
+                    raise ValueError("Unsupported Microsoft 365 channel operation")
+            else:
+                if operation in {"enable", "disable"}:
+                    result = await _request("POST", f"/channels/admin/microsoft_graph/{channel_id}/{operation}", {"id": channel_id})
+                elif operation == "delete":
+                    result = await _request("DELETE", f"/channels/admin/microsoft_graph/{channel_id}", {"id": channel_id})
+                elif operation == "reassign":
+                    result = await _request("POST", f"/channels/admin/microsoft_graph/group/{channel_id}", data)
+                elif operation == "configure":
+                    result = await _request("POST", f"/channels/admin/microsoft_graph/verify/{channel_id}", data)
+                elif operation == "probe":
+                    probe_result = await _request("POST", f"/channels/admin/microsoft_graph/inbound/{channel_id}", data)
+                    count = probe_result.get("content_messages") if isinstance(probe_result, Mapping) else None
+                    result = {
+                        "success": isinstance(probe_result, Mapping) and probe_result.get("result") == "ok",
+                        "content_message_count": count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None,
+                        "mail_content_returned": False,
+                    }
+                else:
+                    raise ValueError("Unsupported Microsoft Graph channel operation")
         elif resource in _MESSAGE_CHANNEL_RESOURCES:
             spec = _resource(resource)
             if operation == "create":
