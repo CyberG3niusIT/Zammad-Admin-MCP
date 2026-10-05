@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -41,8 +42,16 @@ async def request(
     files: dict[str, tuple[str, bytes, str]] | None = None,
     accept_package_redirect: bool = False,
 ) -> Any:
-    if files is not None and (method, path) != ("POST", "/packages"):
-        raise ValueError("Multipart upload is only supported for package installation")
+    knowledge_base_attachment_upload = (
+        method == "POST"
+        and re.fullmatch(r"/knowledge_bases/\d+/answers/\d+/attachments", path) is not None
+    )
+    if knowledge_base_attachment_upload and (files is None or set(files) != {"file"}):
+        raise ValueError("Knowledge Base attachment upload requires one file field")
+    if (method, path) == ("POST", "/packages") and files is not None and set(files) != {"file_upload"}:
+        raise ValueError("Package installation requires one package file field")
+    if files is not None and (method, path) != ("POST", "/packages") and not knowledge_base_attachment_upload:
+        raise ValueError("Multipart upload is only supported for fixed package and Knowledge Base attachment routes")
     if accept_package_redirect and (method, path) != ("POST", "/packages"):
         raise ValueError("Redirect acceptance is only supported for package installation")
     headers = _headers()

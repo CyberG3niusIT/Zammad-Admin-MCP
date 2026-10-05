@@ -82,6 +82,8 @@ from zammad_admin_mcp.admin_schemas.time_accounting import project_types as proj
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
+from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import project_snapshot as project_knowledge_base_attachments_snapshot
+from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import validate_upload as validate_knowledge_base_attachment_upload
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import preview_after as preview_knowledge_base_menu_after
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import project_snapshot as project_knowledge_base_menu_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import validate_update as validate_knowledge_base_menu_update
@@ -265,6 +267,7 @@ _HTTP_LOG_FACILITY_PATHS = {
 _MESSAGE_CHANNEL_RESOURCES = {"sms_channels", "telegram_channels", "whatsapp_channels"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
+_MAX_KNOWLEDGE_BASE_ATTACHMENT_UPLOAD_PLANS = 5
 _PLANS: dict[str, dict[str, Any]] = {}
 _PLAN_LOCK = asyncio.Lock()
 _CRYPTO_SNAPSHOT_KEY = secrets.token_bytes(32)
@@ -551,6 +554,9 @@ async def _request(
         r"/knowledge_bases/\d+/answers/\d+/(?:internal|publish|archive|unarchive|has_publishing_update)",
         path,
     ))
+    knowledge_base_attachment_path = bool(re.fullmatch(
+        r"/knowledge_bases/\d+/answers/\d+/attachments(?:/\d+)?", path,
+    ))
     translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
     translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
     translation_reset_path = bool(re.fullmatch(r"/translations/reset/\d+", path))
@@ -575,6 +581,7 @@ async def _request(
         knowledge_base_settings_path, knowledge_base_lifecycle_path, knowledge_base_menu_path,
         knowledge_base_order_path,
         knowledge_base_publication_path,
+        knowledge_base_attachment_path,
         translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
@@ -624,6 +631,14 @@ async def _request(
         raise ValueError("Knowledge Base ordering actions support PATCH only")
     if knowledge_base_publication_path and method != "POST":
         raise ValueError("Knowledge Base publication actions support POST only")
+    if knowledge_base_attachment_path:
+        attachment_item = re.fullmatch(r"/knowledge_bases/\d+/answers/\d+/attachments/\d+", path) is not None
+        if (attachment_item and method != "DELETE") or (not attachment_item and method != "POST"):
+            raise ValueError("Knowledge Base attachments support only nested upload and deletion")
+        if not attachment_item and (files is None or set(files) != {"file"}):
+            raise ValueError("Knowledge Base attachment uploads require one file field")
+        if attachment_item and files is not None:
+            raise ValueError("Multipart data is supported only for Knowledge Base attachment uploads")
     if (path == "/http_logs" or http_log_facility_path) and method != "GET":
         raise ValueError("HTTP logs are available as read-only metadata")
     if path == "/proxy" and method != "POST":
@@ -1035,6 +1050,7 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
         "knowledge_base_ordering": {"operations": ["read", "reorder"], "risk": "Changes public category or answer order; complete sibling preview and explicit confirmation required."},
+        "knowledge_base_attachments": {"operations": ["read", "upload", "delete"], "risk": "Reads attachment metadata or changes files attached to a Knowledge Base answer; upload and deletion require explicit confirmation."},
         "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
@@ -1690,6 +1706,19 @@ async def _knowledge_base_publication_snapshot(knowledge_base_id: int, answer_id
     return project_knowledge_base_publication_snapshot(
         answer_value, knowledge_base_id, answer_id, category_value
     )
+
+
+async def _knowledge_base_attachments_snapshot(knowledge_base_id: int, answer_id: int) -> dict[str, Any]:
+    answer_value = await _get(f"/knowledge_bases/{knowledge_base_id}/answers/{answer_id}")
+    return project_knowledge_base_attachments_snapshot(answer_value, knowledge_base_id, answer_id)
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_attachments(knowledge_base_id: int, answer_id: int) -> str:
+    """Read file names, sizes, and content types attached to one Knowledge Base answer."""
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    return _json(await _knowledge_base_attachments_snapshot(kb_id, item_id))
 
 
 @mcp.tool()
@@ -3053,6 +3082,100 @@ async def zammad_prepare_knowledge_base_order_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_attachment_upload(
+    knowledge_base_id: int,
+    answer_id: int,
+    filename: str,
+    content_type: str,
+    content_base64: str,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare an attachment upload of at most 10 MiB to a Knowledge Base answer."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base attachment uploads require acknowledge_high_impact=true")
+    data, after = validate_knowledge_base_attachment_upload(filename, content_type, content_base64)
+    before = await _knowledge_base_attachments_snapshot(kb_id, item_id)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_attachment_upload__", "operation": "create",
+        "object_id": item_id, "parent_id": kb_id, "data": data, "before": before,
+        "fingerprint": _digest(before), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        active_uploads = sum(
+            pending.get("resource") == "__knowledge_base_attachment_upload__"
+            for pending in _PLANS.values()
+        )
+        if active_uploads >= _MAX_KNOWLEDGE_BASE_ATTACHMENT_UPLOAD_PLANS:
+            raise ValueError("Too many pending Knowledge Base attachment uploads; apply or let an existing plan expire")
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_attachments", "operation": "upload",
+        "knowledge_base_id": kb_id, "answer_id": item_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Adds a file to a Knowledge Base answer; file contents are sent to Zammad only when this plan is applied.",
+        "before": before, "after": after, "approval_required": True,
+        "note": "No write was performed. File contents are omitted from the preview and held only by the short-lived plan until it expires or is used.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_attachment_delete(
+    knowledge_base_id: int,
+    answer_id: int,
+    attachment_id: int,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare deletion of one file from a Knowledge Base answer."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    file_id = _validate_id(attachment_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base attachment deletion requires acknowledge_high_impact=true")
+    before = await _knowledge_base_attachments_snapshot(kb_id, item_id)
+    selected = next((item for item in before["attachments"] if item["id"] == file_id), None)
+    if selected is None:
+        raise ValueError("attachment_id must identify a file attached to this answer")
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_attachment_delete__", "operation": "delete",
+        "object_id": file_id, "parent_id": kb_id, "answer_id": item_id,
+        "before": before, "selected": selected, "expires_at": now + _PLAN_TTL_SECONDS,
+        "fingerprint": _digest(before), "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_attachments", "operation": "delete",
+        "knowledge_base_id": kb_id, "answer_id": item_id, "attachment": selected,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Permanently removes this file from the selected Knowledge Base answer.",
+        "before": before, "after": {**before, "attachments": [item for item in before["attachments"] if item["id"] != file_id]},
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_publication_transition(
     knowledge_base_id: int,
     answer_id: int,
@@ -4039,6 +4162,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_menu__":
             current = await _knowledge_base_menu_snapshot(plan["object_id"], plan["location"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] in {"__knowledge_base_attachment_upload__", "__knowledge_base_attachment_delete__"}:
+            current = await _knowledge_base_attachments_snapshot(plan["parent_id"], plan.get("answer_id", plan["object_id"]))
+            current_fingerprint = _digest(current)
         elif plan["resource"] == "__knowledge_base_order__":
             current = await _knowledge_base_order_snapshot(
                 plan["parent_id"], plan["kind"], plan["object_id"]
@@ -4304,6 +4430,31 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "location": plan["location"],
                 "locales_updated": len(data["menu_items_sets"]),
                 "updated": True,
+            }
+        elif resource == "__knowledge_base_attachment_upload__":
+            await _request(
+                "POST",
+                f"/knowledge_bases/{plan['parent_id']}/answers/{plan['object_id']}/attachments",
+                files={"file": (data["filename"], data["content"], data["content_type"])},
+            )
+            result = {
+                "knowledge_base_id": plan["parent_id"],
+                "answer_id": plan["object_id"],
+                "filename": data["filename"],
+                "size_bytes": len(data["content"]),
+                "uploaded": True,
+                "file_contents_returned": False,
+            }
+        elif resource == "__knowledge_base_attachment_delete__":
+            await _request(
+                "DELETE",
+                f"/knowledge_bases/{plan['parent_id']}/answers/{plan['answer_id']}/attachments/{plan['object_id']}",
+            )
+            result = {
+                "knowledge_base_id": plan["parent_id"],
+                "answer_id": plan["answer_id"],
+                "attachment_id": plan["object_id"],
+                "deleted": True,
             }
         elif resource == "__knowledge_base_order__":
             await _request("PATCH", plan["write_path"], data)
