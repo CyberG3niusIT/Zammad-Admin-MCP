@@ -56,6 +56,15 @@ from zammad_admin_mcp.admin_schemas.ai_admin import project_object as project_ai
 from zammad_admin_mcp.admin_schemas.ai_admin import project_agent_types
 from zammad_admin_mcp.admin_schemas.ai_admin import validate_payload as validate_ai_payload
 from zammad_admin_mcp.admin_schemas.sessions import project_sessions
+from zammad_admin_mcp.admin_schemas.data_privacy import project_collection as project_data_privacy_tasks
+from zammad_admin_mcp.admin_schemas.data_privacy import project_deletion_target
+from zammad_admin_mcp.admin_schemas.data_privacy import project_selector as project_data_privacy_selector
+from zammad_admin_mcp.admin_schemas.auth_settings import prepare_update as prepare_auth_setting_update
+from zammad_admin_mcp.admin_schemas.auth_settings import project_setting as project_auth_setting
+from zammad_admin_mcp.admin_schemas.auth_settings import supports as is_auth_credential_setting
+from zammad_admin_mcp.admin_schemas.oauth_applications import project_application as project_oauth_application
+from zammad_admin_mcp.admin_schemas.oauth_applications import project_collection as project_oauth_applications
+from zammad_admin_mcp.admin_schemas.oauth_applications import validate_payload as validate_oauth_application_payload
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -177,6 +186,13 @@ _RESOURCES: dict[str, Resource] = {
         "/sessions", operations=frozenset({"delete"}),
         risk="Ends the selected user's active Zammad session and requires them to sign in again.", item=False, high_impact=True,
     ),
+    "data_privacy_tasks": Resource(
+        "/data_privacy_tasks", operations=frozenset(),
+        risk="Returns sanitized metadata for asynchronous account or ticket deletion tasks.", item=False,
+    ),
+    "oauth_applications": Resource(
+        "/applications", risk="Changes OAuth client registrations, redirect destinations, or client credentials.", high_impact=True,
+    ),
 }
 
 _SPECIAL_CHANNEL = "email_notification"
@@ -207,6 +223,35 @@ def _validate_id(object_id: int | None) -> int:
 
 def _json(value: Any) -> str:
     return json.dumps(_scrub(value), ensure_ascii=False, indent=2, sort_keys=True)
+
+
+def _project_admin_settings(value: Any) -> Any:
+    if isinstance(value, list):
+        return [
+            project_auth_setting(item) if isinstance(item, Mapping) and is_auth_credential_setting(item.get("name"))
+            else _project_settings(item)
+            for item in value
+        ]
+    if isinstance(value, Mapping) and is_auth_credential_setting(value.get("name")):
+        return project_auth_setting(value)
+    return _project_settings(value)
+
+
+def _validate_sso_trusted_ip_ranges(value: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    if len(value) > 4096:
+        raise ValueError("auth_sso_trusted_ips cannot exceed 4096 characters")
+    if not value.strip():
+        return []
+    entries = [item.strip() for item in value.split(",")]
+    if any(not item for item in entries):
+        raise ValueError("auth_sso_trusted_ips must contain comma-separated IP addresses or CIDR ranges")
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in entries:
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError as exc:
+            raise ValueError("auth_sso_trusted_ips contains an invalid IP address or CIDR range") from exc
+    return networks
 
 
 def _digest(value: Any) -> str:
@@ -370,6 +415,8 @@ async def _request(
         "/monitoring/health_check", "/monitoring/token", "/monitoring/restart_failed_jobs",
         "/system_report",
         "/object_manager_attributes_execute_migrations",
+        "/tickets/selector",
+        "/applications/token",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -400,6 +447,9 @@ async def _request(
     translation_upsert_path = path == "/translations/upsert"
     settings_image_path = bool(re.fullmatch(r"/settings/image/\d+", path))
     settings_reset_path = bool(re.fullmatch(r"/settings/reset/\d+", path))
+    ticket_item_path = bool(re.fullmatch(r"/tickets/\d+", path))
+    ticket_selector_path = path == "/tickets/selector"
+    oauth_application_token_path = path == "/applications/token"
     fixed_special_paths = (
         email_group_path, whatsapp_action_path, microsoft365_group_path,
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
@@ -408,11 +458,18 @@ async def _request(
         settings_image_path, settings_reset_path, item_path, knowledge_base_path,
         knowledge_base_settings_path, translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
+        ticket_item_path, ticket_selector_path, oauth_application_token_path,
     )
     if path not in allowed and not any(fixed_special_paths):
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
+    if ticket_item_path and method != "GET":
+        raise ValueError("Ticket deletion previews support GET only")
+    if ticket_selector_path and method != "POST":
+        raise ValueError("Ticket selector previews support POST only")
+    if oauth_application_token_path and method != "POST":
+        raise ValueError("OAuth application token issuance supports POST only")
     return await _send_api_request(
         method, path, payload, params,
         files=files,
@@ -443,6 +500,8 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_categories": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "ldap_connection_tests": {"operations": ["discover", "bind"], "risk": "Connects from Zammad to the configured LDAP host; bind credentials are secret-safe and every action requires approval."},
         "ldap_import_actions": {"operations": ["dry_run", "sync"], "risk": "Dry-run reads all active LDAP directories and records aggregate results; sync may create, update, or deactivate Zammad users."},
+        "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
+        "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
     })
 
 
@@ -486,10 +545,14 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         return _json(project_agent_types(await _get(_resource(resource).path)))
     if resource == "sessions":
         return _json(project_sessions(await _get("/sessions")))
+    if resource == "data_privacy_tasks":
+        return _json(project_data_privacy_tasks(await _get("/data_privacy_tasks", params)))
+    if resource == "oauth_applications":
+        return _json(project_oauth_applications(await _get("/applications", {**params, "full": True})))
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
-        result = _project_settings(result)
+        result = _project_admin_settings(result)
         if area is not None:
             result = [item for item in result if isinstance(item, Mapping) and item.get("area") == area] if isinstance(result, list) else []
     return _json(result)
@@ -535,6 +598,64 @@ async def _session_snapshot(session_id: int) -> tuple[Mapping[str, Any], dict[st
     return matches[0], projected_matches[0]
 
 
+async def _oauth_application_snapshot(application_id: int) -> Mapping[str, Any]:
+    collection = await _get("/applications", {"full": True})
+    assets = collection.get("assets") if isinstance(collection, Mapping) else None
+    applications = assets.get("Application") if isinstance(assets, Mapping) else None
+    application = applications.get(str(_validate_id(application_id))) if isinstance(applications, Mapping) else None
+    if not isinstance(application, Mapping) or application.get("id") != application_id:
+        raise RuntimeError("Zammad did not return the selected OAuth application")
+    return application
+
+
+async def _data_privacy_deletion_snapshot(kind: str, object_id: int, delete_organization: bool) -> dict[str, Any]:
+    target = await _get(f"/{'users' if kind == 'User' else 'tickets'}/{object_id}")
+    if not isinstance(target, Mapping) or target.get("id") != object_id:
+        raise RuntimeError("Zammad did not return the selected deletion target")
+    snapshot: dict[str, Any] = {"target": target}
+    if kind == "User":
+        for field, condition in (
+            ("customer_tickets", {"ticket.customer_id": {"operator": "is", "pre_condition": "specific", "value": object_id}}),
+            ("owner_tickets", {"ticket.owner_id": {"operator": "is", "pre_condition": "specific", "value": object_id}}),
+        ):
+            selector = await _request("POST", "/tickets/selector", {"condition": condition})
+            snapshot[field] = project_data_privacy_selector(selector)
+        organization_id = target.get("organization_id")
+        if delete_organization:
+            if isinstance(organization_id, bool) or not isinstance(organization_id, int) or organization_id <= 0:
+                raise ValueError("delete_organization requires the selected user to belong to an organization")
+            organization = await _get(f"/organizations/{organization_id}")
+            members = organization.get("member_ids") if isinstance(organization, Mapping) else None
+            if not isinstance(members, list) or object_id not in members:
+                raise RuntimeError("Zammad did not return a verifiable organization membership list")
+            if len(members) != 1:
+                raise ValueError("The organization can be included only when the selected user is its sole member")
+            snapshot["organization"] = organization
+    return snapshot
+
+
+def _data_privacy_deletion_preview(kind: str, snapshot: Mapping[str, Any], delete_organization: bool) -> dict[str, Any]:
+    result = {
+        "target": project_deletion_target(kind, snapshot.get("target")),
+        "asynchronous_execution": True,
+        "ticket_deletion_counts": {
+            key.removesuffix("_tickets"): snapshot[key]["object_count"]
+            for key in ("customer_tickets", "owner_tickets") if key in snapshot
+        },
+        "ticket_id_samples": {
+            key.removesuffix("_tickets"): snapshot[key]["sample_ids"]
+            for key in ("customer_tickets", "owner_tickets") if key in snapshot
+        },
+        "delete_organization": delete_organization,
+    }
+    if "organization" in snapshot:
+        organization = snapshot["organization"]
+        result["organization"] = {
+            key: organization[key] for key in ("id", "name") if key in organization
+        } if isinstance(organization, Mapping) else None
+    return result
+
+
 def _object_manager_migration_preview(attributes: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
     fields = ("id", "object", "name", "display", "data_type", "to_create", "to_migrate", "to_delete", "to_config")
     return [{key: item[key] for key in fields if key in item} for item in attributes]
@@ -567,11 +688,13 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
     if not spec.item:
         raise ValueError("This resource does not support item reads")
     object_id = _validate_id(object_id)
-    result = await _get(f"{spec.path}/{object_id}")
+    result = await _oauth_application_snapshot(object_id) if resource == "oauth_applications" else await _get(f"{spec.path}/{object_id}")
     if resource in {"settings", "product_logo"}:
-        result = _project_settings(result)
+        result = _project_admin_settings(result) if resource == "settings" else _project_settings(result)
     if resource in {"ai_agents", "ai_text_tools"}:
         result = project_ai_object(resource, result)
+    if resource == "oauth_applications":
+        result = project_oauth_application(result)
     return _json(result)
 
 
@@ -947,6 +1070,91 @@ async def zammad_prepare_session_action(
         "risk": "The selected user will be signed out and must authenticate again. The session cookie identifier is never returned.",
         "before": plan["before"], "after": {"session_terminated": True},
         "approval_required": True, "note": "No session was ended. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_data_privacy_deletion(
+    object_type: Literal["User", "Ticket"],
+    object_id: int,
+    confirmation: Literal["DELETE"],
+    delete_organization: bool = False,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview one asynchronous Zammad user or ticket deletion task; no task is queued until apply."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    object_id = _validate_id(object_id)
+    if confirmation != "DELETE":
+        raise ValueError('confirmation must be the exact text "DELETE"')
+    if not isinstance(delete_organization, bool):
+        raise ValueError("delete_organization must be a boolean")
+    if delete_organization and object_type != "User":
+        raise ValueError("delete_organization is supported only for a user deletion")
+    if not acknowledge_high_impact:
+        raise ValueError("Data Privacy deletions require acknowledge_high_impact=true")
+    snapshot = await _data_privacy_deletion_snapshot(object_type, object_id, delete_organization)
+    before = _data_privacy_deletion_preview(object_type, snapshot, delete_organization)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__data_privacy_deletion__", "operation": "delete",
+        "object_id": object_id, "object_type": object_type,
+        "data": {"delete_organization": delete_organization},
+        "fingerprint": _digest(snapshot), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "data_privacy_tasks", "operation": "delete",
+        "object_type": object_type, "object_id": object_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS, "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Apply queues an irreversible account or ticket deletion. Zammad processes Data Privacy tasks asynchronously, normally within the next 10-minute job interval; it recalculates its ticket preview when execution begins. A user deletion can also remove a sole-member organization if explicitly selected.",
+        "before": before, "after": {"deletion_task_queued": True},
+        "approval_required": True,
+        "note": "No task was queued. Apply requires separate explicit user approval and acknowledge_high_impact=true. Zammad revalidates system-user, current-user, last-admin, and duplicate-task restrictions when the task is created.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_oauth_application_token(
+    application_id: int,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview issuing a bearer token for the current Zammad user to one OAuth application."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    application_id = _validate_id(application_id)
+    if not acknowledge_high_impact:
+        raise ValueError("OAuth application token issuance requires acknowledge_high_impact=true")
+    application = await _oauth_application_snapshot(application_id)
+    preview = project_oauth_application(application)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__oauth_application_token__", "operation": "issue_token",
+        "object_id": application_id, "data": {}, "fingerprint": _digest(application),
+        "before": preview, "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "oauth_applications", "operation": "issue_token",
+        "object_id": application_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"], "before": preview,
+        "after": {"bearer_token_issued": True, "resource_owner": "current Zammad user", "token_value_returned": False},
+        "risk": "The token grants the selected application access as the current Zammad user. Its bearer credential will be stored in the owner-only local secret store and must be shared with the application operator through a secure channel.",
+        "approval_required": True,
+        "note": "No token was issued. Apply requires separate explicit user approval and stores the one-time token outside the repository.",
     })
 
 
@@ -1331,6 +1539,10 @@ async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any
         return await _get(_resource(resource).path)
     if resource == "__knowledge_base_settings__":
         return await _get(f"/knowledge_bases/{_validate_id(object_id)}")
+    if resource == "oauth_applications":
+        if operation == "create":
+            return await _get("/applications", {"full": True})
+        return await _oauth_application_snapshot(_validate_id(object_id))
     spec = _resource(resource)
     if operation == "create":
         return await _get(spec.path)
@@ -1363,6 +1575,20 @@ async def _ldap_integration_setting_snapshot() -> Mapping[str, Any]:
     state = setting.get("state_current")
     if not isinstance(state, Mapping) or state.get("value") is not True:
         raise ValueError("LDAP integration must be enabled before starting a sync")
+    return setting
+
+
+async def _setting_snapshot_by_name(name: str) -> Mapping[str, Any]:
+    settings = await _get("/settings")
+    if not isinstance(settings, list):
+        raise RuntimeError("Zammad did not return the settings list")
+    candidates = [item for item in settings if isinstance(item, Mapping) and item.get("name") == name]
+    if len(candidates) != 1:
+        raise RuntimeError(f"The {name} setting is missing or ambiguous")
+    setting_id = _validate_id(candidates[0].get("id"))
+    setting = await _get(f"/settings/{setting_id}")
+    if not isinstance(setting, Mapping) or setting.get("name") != name:
+        raise RuntimeError(f"Zammad did not return the {name} setting")
     return setting
 
 
@@ -1774,7 +2000,15 @@ async def zammad_prepare_admin_change(
             state_current = data.get("state_current")
             if not isinstance(state_current, dict) or set(state_current) != {"value"}:
                 raise ValueError("settings state_current must contain exactly one value field")
-            _validate_setting_secret_reference(data)
+            setting_value = state_current["value"]
+            if data["name"] in {"auth_google_oauth2", "auth_saml", "auth_openid_connect", "auth_sso"} and not isinstance(setting_value, bool):
+                raise ValueError(f"{data['name']} value must be a boolean")
+            if data["name"] == "auth_sso_trusted_ips" and not isinstance(setting_value, str):
+                raise ValueError("auth_sso_trusted_ips value must be a comma-separated IP/CIDR string")
+            if data["name"] == "auth_sso_trusted_ips":
+                _validate_sso_trusted_ip_ranges(setting_value)
+            if not is_auth_credential_setting(data.get("name")):
+                _validate_setting_secret_reference(data)
         if operation == "delete" and data:
             raise ValueError("delete does not accept data")
         if operation == "create" and object_id is not None:
@@ -1790,9 +2024,18 @@ async def zammad_prepare_admin_change(
         raise ValueError("This change is high impact; inspect the resource risk and set acknowledge_high_impact=true to prepare it")
 
     ldap_before = None
+    auth_settings_before = None
+    auth_write_effects: list[str] = []
     if resource == "ldap_sources" and operation == "update" and isinstance(data, Mapping) and "preferences" in data:
         ldap_before = await _snapshot(resource, operation, object_id)
         data = retain_ldap_secret(data, ldap_before)
+    if resource == "settings" and operation == "update" and isinstance(data, Mapping) and is_auth_credential_setting(data.get("name")):
+        auth_settings_before = await _snapshot(resource, operation, object_id)
+        if not isinstance(auth_settings_before, Mapping) or auth_settings_before.get("id") != object_id or auth_settings_before.get("name") != data.get("name"):
+            raise ValueError("settings name must match the selected authentication credential setting ID")
+        data, preview_data, auth_write_effects = prepare_auth_setting_update(
+            data, auth_settings_before, _materialize_secret_values
+        )
     if resource == "ldap_sources" and operation in {"create", "update"}:
         if operation == "create" and isinstance(data.get("preferences"), Mapping) and data["preferences"].get("bind_pw") == "**********":
             raise ValueError("A masked bind password can only be reused when updating an existing LDAP source")
@@ -1803,9 +2046,13 @@ async def zammad_prepare_admin_change(
         data, preview_data = materialize_external_credentials(data)
     elif resource in {"ai_agents", "ai_text_tools"} and operation in {"create", "update"}:
         data, preview_data = validate_ai_payload(resource, operation, data)
+    elif resource == "oauth_applications" and operation in {"create", "update"}:
+        data, preview_data = validate_oauth_application_payload(operation, data)
     elif resource == "product_logo" and operation == "update":
         data, _ = _materialize_secret_values(data)
         preview_data = validate_product_logo_payload(data)
+    elif resource == "settings" and operation == "update" and auth_settings_before is not None:
+        pass
     else:
         data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
     if resource == "jobs" and operation in {"create", "update"}:
@@ -1819,7 +2066,7 @@ async def zammad_prepare_admin_change(
     if resource == "postmaster_filters" and operation in {"create", "update"}:
         validate_postmaster_filter_payload(operation, data)
 
-    before = ldap_before if ldap_before is not None else await _snapshot(resource, operation, object_id)
+    before = ldap_before if ldap_before is not None else auth_settings_before if auth_settings_before is not None else await _snapshot(resource, operation, object_id)
     if resource == "settings" and operation == "reset":
         if not isinstance(before, Mapping) or not isinstance(before.get("name"), str):
             raise RuntimeError("The Zammad API did not return a setting snapshot")
@@ -1974,6 +2221,37 @@ async def zammad_prepare_admin_change(
         _validate_token_create_payload(data, before)
     dependencies: list[dict[str, str]] = []
     group_id = None
+    if resource == "settings" and operation == "update" and isinstance(data, Mapping):
+        setting_name = data.get("name")
+        setting_state = data.get("state_current")
+        setting_value = setting_state.get("value") if isinstance(setting_state, Mapping) else None
+        related_setting_name = None
+        if setting_name == "auth_sso" and setting_value is True:
+            related_setting_name = "auth_sso_trusted_ips"
+        elif setting_name == "auth_sso_trusted_ips":
+            related_setting_name = "auth_sso"
+        if related_setting_name is not None:
+            related_setting = await _setting_snapshot_by_name(related_setting_name)
+            dependencies.append({
+                "path": f"/settings/{_validate_id(related_setting.get('id'))}",
+                "fingerprint": _digest(related_setting),
+            })
+            related_state = related_setting.get("state_current")
+            related_value = related_state.get("value") if isinstance(related_state, Mapping) else None
+            if setting_name == "auth_sso" and (not isinstance(related_value, str) or not related_value.strip()):
+                auth_write_effects.append(
+                    "Enable proxy SSO with no trusted proxy IP ranges configured; authentication headers will be accepted from any source."
+                )
+            if setting_name == "auth_sso_trusted_ips" and related_value is True:
+                networks = _validate_sso_trusted_ip_ranges(setting_value)
+                if not networks:
+                    auth_write_effects.append(
+                        "Clear trusted proxy IP ranges while proxy SSO is enabled; authentication headers will be accepted from any source."
+                    )
+                elif any(network.prefixlen == 0 for network in networks):
+                    auth_write_effects.append(
+                        "Trust every IPv4/IPv6 source for proxy SSO because a universal network range is configured."
+                    )
     if resource == _EMAIL_ACCOUNT_RESOURCE:
         group_id = data["group_id"]
     elif resource == "email_channels" and operation == "reassign":
@@ -2104,6 +2382,15 @@ async def zammad_prepare_admin_change(
             after = {"id": object_id, "active": operation == "enable"}
         else:
             after = None
+    elif resource == "oauth_applications":
+        if operation == "create":
+            before_preview = project_oauth_applications(before)
+            after = preview_data
+        else:
+            before_preview = project_oauth_application(before)
+            after = project_oauth_application(_merge_preview(before, preview_data or {})) if operation == "update" else None
+            if operation == "update" and isinstance(preview_data, Mapping) and preview_data.get("redirect_uri_warnings"):
+                after["redirect_uri_warnings"] = preview_data["redirect_uri_warnings"]
     elif operation == "create":
         after = preview_data
     elif resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -2136,8 +2423,8 @@ async def zammad_prepare_admin_change(
     ):
         before_preview = before
     if resource == "settings":
-        before_preview = _project_settings(before_preview)
-        after = _project_settings(after)
+        before_preview = _project_admin_settings(before_preview)
+        after = _project_admin_settings(after)
 
     plan_id = secrets.token_urlsafe(24)
     now = time.time()
@@ -2184,6 +2471,8 @@ async def zammad_prepare_admin_change(
     }
     if write_effects:
         preview_response["write_effects"] = write_effects
+    if auth_write_effects:
+        preview_response["write_effects"] = auth_write_effects
     return _json(preview_response)
 
 
@@ -2235,6 +2524,14 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__session_action__":
             current = await _session_snapshot(plan["object_id"])
             current_fingerprint = _digest(current[0]) if current is not None else None
+        elif plan["resource"] == "__data_privacy_deletion__":
+            current = await _data_privacy_deletion_snapshot(
+                plan["object_type"], plan["object_id"], plan["data"]["delete_organization"]
+            )
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__oauth_application_token__":
+            current = await _oauth_application_snapshot(plan["object_id"])
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -2396,8 +2693,54 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "name": data["name"],
                 "permission": data["permission"],
                 "expires_at": data.get("expires_at"),
-                "secret_file": str(stored_path),
+                "file_path": str(stored_path),
                 "file_mode": "0600",
+                "token_value_returned": False,
+            }
+        elif resource == "oauth_applications":
+            if operation == "create":
+                created = await _request("POST", "/applications", data)
+                client_secret = created.get("secret") if isinstance(created, Mapping) else None
+                if not isinstance(client_secret, str) or not client_secret:
+                    raise RuntimeError("Zammad created the OAuth application without returning a retrievable client secret; delete it before retrying")
+                metadata = {
+                    "name": f"oauth-app-{created.get('name', 'client')}",
+                    "purpose": "zammad-oauth-client-secret",
+                    "application_id": created.get("id"),
+                    "client_id": created.get("uid"),
+                }
+                try:
+                    secret_file = _store_generated_token(client_secret, metadata)
+                except RuntimeError:
+                    raise RuntimeError("Zammad created the OAuth application but secure client-secret storage failed; do not retry creation, delete this application and recreate it after fixing the secret store") from None
+                result = {
+                    **project_oauth_application(created),
+                    "file_path": str(secret_file),
+                    "client_secret_returned": False,
+                }
+            elif operation == "update":
+                updated = await _request("PUT", f"/applications/{plan['object_id']}", data)
+                result = project_oauth_application(updated)
+            elif operation == "delete":
+                await _request("DELETE", f"/applications/{plan['object_id']}")
+                result = {"deleted": True, "application_id": plan["object_id"]}
+            else:
+                raise ValueError("Unsupported OAuth application operation")
+        elif resource == "__oauth_application_token__":
+            token_response = await _request("POST", "/applications/token", {"id": _validate_id(plan["object_id"])})
+            token_value = token_response.get("token") if isinstance(token_response, Mapping) else None
+            if not isinstance(token_value, str) or not token_value:
+                raise RuntimeError("Zammad issued no retrievable OAuth application token; inspect application access before retrying")
+            secret_file = _store_generated_token(token_value, {
+                "name": f"oauth-app-{plan['object_id']}-user-token",
+                "purpose": "zammad-oauth-application-access-token",
+                "application_id": plan["object_id"],
+                "resource_owner": "current Zammad user",
+            })
+            result = {
+                "issued": True,
+                "application_id": plan["object_id"],
+                "file_path": str(secret_file),
                 "token_value_returned": False,
             }
         elif resource == "__knowledge_base_settings__":
@@ -2441,7 +2784,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                     ) from None
                 result = {
                     "token_rotated": True,
-                    "secret_file": str(stored_path),
+                    "file_path": str(stored_path),
                     "file_mode": "0600",
                     "token_value_returned": False,
                 }
@@ -2487,6 +2830,22 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif resource == "__session_action__":
             await _request("DELETE", f"/sessions/{_validate_id(plan['object_id'])}")
             result = {"session_terminated": True, "session_id": plan["object_id"]}
+        elif resource == "__data_privacy_deletion__":
+            preferences: dict[str, Any] = {"sure": "DELETE"}
+            if data["delete_organization"]:
+                preferences["delete_organization"] = "true"
+            task = await _request("POST", "/data_privacy_tasks", {
+                "deletable_type": plan["object_type"],
+                "deletable_id": _validate_id(plan["object_id"]),
+                "preferences": preferences,
+            })
+            result = {
+                "task_queued": isinstance(task, Mapping),
+                "task_id": task.get("id") if isinstance(task, Mapping) else None,
+                "state": task.get("state") if isinstance(task, Mapping) else None,
+                "asynchronous_execution": True,
+                "deletion_details_returned": False,
+            }
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -2506,6 +2865,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__ldap_import_action__": "ldap_import_actions",
         "__object_manager_migrations__": "object_manager_attributes",
         "__session_action__": "sessions",
+        "__data_privacy_deletion__": "data_privacy_tasks",
+        "__oauth_application_token__": "oauth_applications",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -2513,6 +2874,10 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "Plan consumed. A dry-run ImportJob was submitted; it does not save user or role changes. Read status before starting another dry run."
     elif resource == "__ldap_import_action__":
         response_note = "Plan consumed. A background LDAP sync was queued and may change users and roles. Read status before retrying."
+    elif resource == "__data_privacy_deletion__":
+        response_note = "The deletion was queued for asynchronous Zammad processing. Its scope can change before execution; inspect the Data Privacy task status before retrying."
+    elif resource == "__oauth_application_token__":
+        response_note = "The token was issued for the current Zammad user and stored in the local secret store. Do not retry if delivery is uncertain; inspect application access first."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

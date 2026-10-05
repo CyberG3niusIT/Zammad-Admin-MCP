@@ -125,6 +125,8 @@ Supported workflows include:
 - existing Google mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - Google and Microsoft 365 channels with a stored migration backup can be rolled back through a staged plan that previews restored metadata without showing the saved configuration
 - Web channel settings can be listed by Zammad area (for example `CustomerWeb::Base`) and changed through the staged settings workflow
+- Google OAuth, SAML, and OpenID Connect settings can be read with safe field projections and updated through provider-specific staged plans; key material uses process environment references
+- OAuth applications can be read and changed through staged plans; client secrets and generated bearer tokens are stored in the protected local secret directory and never returned in MCP output. `zammad_prepare_oauth_application_token` stages an application token for the current Zammad user
 - Product-logo updates use a staged upload with image type and size validation; previews and apply responses omit image data
 - Knowledge Base role access changes use a complete per-role preview, validate against Zammad's eligible roles, and are rejected if the permissions changed after preview
 - Translation administration can list customized entries, search suggestions, stage upserts, reset system translations, and delete custom translations
@@ -134,6 +136,9 @@ Supported workflows include:
 - Object Manager attribute removals and the global queued-migration action use separate previews; removal migrations permanently drop the affected database column and its values
 - AI agents and Writing Assistant tools can be read and changed through staged CRUD; previews include prompt/configuration changes and call out automated ticket effects or external provider usage charges
 - Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
+- Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
+
+Use `zammad_prepare_data_privacy_deletion` to preview one User or Ticket deletion. Apply the returned plan only after explicit approval; Zammad's background job performs the deletion later and recalculates the linked-ticket impact before execution.
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 
