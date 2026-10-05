@@ -2278,11 +2278,16 @@ async def zammad_get_knowledge_base_record(
     record_id: int,
     translation_id: int | None = None,
 ) -> str:
-    """Read one Knowledge Base answer or category; answer content is optional by translation ID."""
+    """Read one Knowledge Base answer or full category; answer content is optional by translation ID."""
     kb_id = _validate_id(knowledge_base_id)
     item_id = _validate_id(record_id)
     path = f"/knowledge_bases/{kb_id}/{kind}/{item_id}"
-    params = {"include_contents": _validate_id(translation_id)} if translation_id is not None else None
+    if kind == "categories":
+        if translation_id is not None:
+            raise ValueError("translation_id can only be used with Knowledge Base answers")
+        params = {"full": True}
+    else:
+        params = {"include_contents": _validate_id(translation_id)} if translation_id is not None else None
     return _json(await _get(path, params))
 
 

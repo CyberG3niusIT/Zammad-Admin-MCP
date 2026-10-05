@@ -173,6 +173,8 @@ Knowledge base:
 - `zammad_prepare_knowledge_base_permissions_change`
 - `zammad_prepare_knowledge_base_category_permissions_change`
 
+Category record reads include the full category assets so translated names and text are available. `translation_id` applies only to answer records.
+
 Translations:
 
 - `zammad_list_customized_translations`
