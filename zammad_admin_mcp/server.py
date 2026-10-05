@@ -3499,6 +3499,8 @@ def _project_messaging_channels(value: Any) -> dict[str, Any]:
     }
 
     def safe_value(item: Any, key: str | None = None) -> Any:
+        if key == "callback_url":
+            return "[REDACTED]" if item not in (None, "", False) else item
         if key == "gateway" and isinstance(item, str):
             parsed = urlsplit(item)
             hostname = parsed.hostname or ""

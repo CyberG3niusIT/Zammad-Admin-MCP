@@ -20,6 +20,8 @@ _SETTING_SECRET_SUFFIXES = (
 
 def _is_secret_field(key: str, value: Any) -> bool:
     normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
+    if normalized == "callback_url_uuid":
+        return True
     if normalized in {"user_access_tokens", "access_tokens", "tokens"} and isinstance(value, (Mapping, list)):
         return False
     words = set(re.findall(r"[a-z0-9]+", normalized))
