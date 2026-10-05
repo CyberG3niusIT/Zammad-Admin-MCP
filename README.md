@@ -141,6 +141,7 @@ Supported workflows include:
 - Maintenance and Time Accounting settings use the staged Settings workflow; Time Accounting activity types support staged create/update, and monthly reports are available with bounded, privacy-projected results
 - `zammad_prepare_ticket_agent_notification_apply` stages asynchronous application of the current default matrix to every user with `ticket.agent` permission; the plan fingerprints that matrix, requires high-impact approval, and reports that Zammad returns no job ID
 - `zammad_get_user_two_factor_methods`, `zammad_prepare_user_two_factor_change`, and `zammad_prepare_user_unlock` expose enabled method names and stage high-impact security changes; unlock is limited to accounts past the configured failed-login threshold, and credential details are never returned
+- `zammad_prepare_proxy_test` previews a one-time outbound proxy check; applying it sends a request to Zammad's fixed test target, stores no settings, and returns no proxy diagnostic text
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 

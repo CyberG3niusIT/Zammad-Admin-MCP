@@ -267,6 +267,15 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _proxy_test_fingerprint(data: Mapping[str, Any]) -> str:
+    return _digest({
+        "proxy": data.get("proxy"),
+        "username_configured": "proxy_username" in data,
+        "password_configured": "proxy_password" in data,
+        "bypass_list_configured": bool(data.get("proxy_no")),
+    })
+
+
 def _snapshot_fingerprint(resource: str, value: Any) -> str:
     if resource == "user_access_tokens" and isinstance(value, Mapping):
         permissions = value.get("permissions", [])
@@ -427,6 +436,7 @@ async def _request(
         "/applications/token",
         "/settings/ticket_agent_default_notifications/apply_to_all",
         "/calendars/timezones",
+        "/proxy",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -491,6 +501,8 @@ async def _request(
         raise ValueError("Applying ticket agent notification defaults supports POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
+    if path == "/proxy" and method != "POST":
+        raise ValueError("Proxy connectivity checks support POST only")
     if user_unlock_path and method != "PUT":
         raise ValueError("User unlock supports PUT only")
     if user_two_factor_path:
@@ -712,6 +724,88 @@ async def zammad_prepare_user_unlock(
 
 
 @mcp.tool()
+async def zammad_prepare_proxy_test(
+    proxy: str,
+    proxy_username: str | None = None,
+    proxy_password: dict[str, Any] | None = None,
+    proxy_no: str | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview an outbound proxy connectivity check; it does not save proxy settings."""
+    global _PLAN_CLEANER
+    if not acknowledge_high_impact:
+        raise ValueError("A proxy check makes an outbound HTTP request; set acknowledge_high_impact=true to prepare it")
+    if not isinstance(proxy, str) or not proxy.strip() or len(proxy) > 2048:
+        raise ValueError("proxy must be a non-empty proxy address of at most 2048 characters")
+    if any(ord(character) < 32 or ord(character) == 127 for character in proxy):
+        raise ValueError("proxy must not contain control characters")
+    if "@" in proxy:
+        raise ValueError("proxy must not contain embedded credentials")
+    if "://" in proxy:
+        parsed_proxy = urlsplit(proxy)
+        if parsed_proxy.scheme not in {"http", "https"} or not parsed_proxy.hostname or parsed_proxy.query or parsed_proxy.fragment:
+            raise ValueError("proxy URL must be HTTP(S), include a host, and omit query and fragment")
+    if proxy_username is not None and (
+        not isinstance(proxy_username, str) or len(proxy_username) > 512
+        or any(ord(character) < 32 or ord(character) == 127 for character in proxy_username)
+    ):
+        raise ValueError("proxy_username must be a string of at most 512 characters")
+    if proxy_no is not None and (
+        not isinstance(proxy_no, str) or len(proxy_no) > 4096
+        or any(ord(character) < 32 or ord(character) == 127 for character in proxy_no)
+    ):
+        raise ValueError("proxy_no must be a string of at most 4096 characters")
+    if (proxy_username is None) != (proxy_password is None):
+        raise ValueError("proxy_username and proxy_password must be supplied together")
+
+    requested: dict[str, Any] = {"proxy": proxy.strip()}
+    if proxy_username is not None:
+        requested["proxy_username"] = proxy_username
+        requested["proxy_password"] = proxy_password
+    if proxy_no is not None:
+        requested["proxy_no"] = proxy_no
+    data, preview_data = _materialize_secret_values(requested)
+    if "proxy_password" in data and not isinstance(data["proxy_password"], str):
+        raise ValueError("proxy_password must be a process environment secret reference")
+    if "proxy_password" in data and not data["proxy_password"]:
+        raise ValueError("The referenced proxy password is empty")
+
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__proxy_test__",
+        "operation": "test",
+        "object_id": None,
+        "data": data,
+        "fingerprint": _proxy_test_fingerprint(data),
+        "before": None,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "proxy_test",
+        "operation": "test",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "proxy": {"address": preview_data["proxy"], "username_configured": "proxy_username" in preview_data,
+                  "password_configured": "proxy_password" in preview_data,
+                  "bypass_list_configured": bool(preview_data.get("proxy_no"))},
+        "request_target": "http://zammad.org",
+        "risk": "Apply sends an outbound HTTP request from Zammad through the selected proxy and may disclose proxy credentials to that proxy. No Zammad settings are saved.",
+        "approval_required": True,
+        "note": "No request was sent. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_ticket_agent_notification_apply(
     acknowledge_high_impact: bool = False,
 ) -> str:
@@ -782,6 +876,7 @@ async def zammad_list_admin_resources() -> str:
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
         "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
         "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
+        "proxy_test": {"operations": ["test"], "risk": "Sends an outbound HTTP request from Zammad through the selected proxy; does not save settings."},
     })
 
 
@@ -2856,6 +2951,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__user_unlock__":
             current = await _user_unlock_snapshot(plan["object_id"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__proxy_test__":
+            current = plan["data"]
+            current_fingerprint = _proxy_test_fingerprint(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -3200,6 +3298,16 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             user_id = _validate_id(plan["object_id"])
             await _request("PUT", f"/users/unlock/{user_id}")
             result = {"user_id": user_id, "unlocked": True, "login_failed": 0}
+        elif resource == "__proxy_test__":
+            try:
+                proxy_result = await _request("POST", "/proxy", data)
+            except Exception:
+                raise RuntimeError("Proxy connectivity check failed; diagnostic details were withheld") from None
+            result = {
+                "success": isinstance(proxy_result, Mapping) and proxy_result.get("result") == "success",
+                "diagnostics_returned": False,
+                "settings_saved": False,
+            }
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -3224,6 +3332,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__ticket_notification_reset__": "ticket_agent_notifications",
         "__user_two_factor_action__": "user_two_factor_authentication",
         "__user_unlock__": "user_unlock",
+        "__proxy_test__": "proxy_test",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -3241,6 +3350,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
     elif resource == "__user_unlock__":
         response_note = "The user was unlocked. Inspect the failed-login counter before retrying if the outcome is uncertain."
+    elif resource == "__proxy_test__":
+        response_note = "The one-time outbound connectivity check completed. No proxy settings were saved."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}
