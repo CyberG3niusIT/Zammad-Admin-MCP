@@ -86,6 +86,7 @@ from zammad_admin_mcp.admin_schemas.http_logs import project_collection as proje
 from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
 from zammad_admin_mcp.admin_schemas.user_imports import validate_csv_input as validate_user_import_input
+from zammad_admin_mcp.admin_schemas.user_history import project_history as project_user_history
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -536,6 +537,7 @@ async def _request(
     oauth_application_token_path = path == "/applications/token"
     time_accounting_report_path = bool(re.fullmatch(r"/time_accounting/log/(?:by_activity|by_ticket|by_customer|by_organization)/\d{4}/\d{1,2}", path))
     user_unlock_path = bool(re.fullmatch(r"/users/unlock/\d+", path))
+    user_history_path = bool(re.fullmatch(r"/users/history/\d+", path))
     user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
     http_log_facility_path = path in _HTTP_LOG_FACILITY_PATHS.values()
     fixed_special_paths = (
@@ -548,7 +550,7 @@ async def _request(
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
-        user_unlock_path, user_two_factor_path,
+        user_unlock_path, user_two_factor_path, user_history_path,
         http_log_facility_path,
         bool(re.fullmatch(r"/integration/pgp/key/\d+", path)),
     )
@@ -585,6 +587,8 @@ async def _request(
         raise ValueError("Proxy connectivity checks support POST only")
     if user_unlock_path and method != "PUT":
         raise ValueError("User unlock supports PUT only")
+    if user_history_path and method != "GET":
+        raise ValueError("User history supports GET only")
     if user_two_factor_path:
         expected_method = "GET" if path.endswith("/enabled_authentication_methods") else "DELETE"
         if method != expected_method:
@@ -702,6 +706,16 @@ async def zammad_get_user_two_factor_methods(user_id: int) -> str:
     user_id = _validate_id(user_id)
     snapshot = await _user_two_factor_snapshot(user_id)
     return _json({"user": snapshot["user"], "enabled_methods": snapshot["methods"]})
+
+
+@mcp.tool()
+async def zammad_get_user_history(user_id: int, limit: int = 100) -> str:
+    """Read recent account history with secret-like field values redacted and related assets omitted."""
+    user_id = _validate_id(user_id)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+        raise ValueError("limit must be an integer between 1 and 500")
+    history = await _get(f"/users/history/{user_id}")
+    return _json({"user_id": user_id, **project_user_history(history, limit)})
 
 
 @mcp.tool()
@@ -977,6 +991,7 @@ async def zammad_list_admin_resources() -> str:
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
         "user_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates users in bulk; imports can change user identity, organization, and role assignments."},
+        "user_history": {"operations": ["read"], "risk": "Returns recent account change metadata; secret-like field values are redacted and related user assets are omitted."},
         "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
         "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
         "proxy_test": {"operations": ["test"], "risk": "Sends an outbound HTTP request from Zammad through the selected proxy; does not save settings."},

@@ -215,7 +215,7 @@ AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_a
 
 Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
 
-User administration also provides `zammad_prepare_user_import` for a CSV dry-run and staged import. It accepts CSV content directly (up to 5 MiB), never reads a server-side path, excludes destructive CSV deletion, and returns aggregate counts and sanitized error codes only. The source CSV remains in one volatile plan for up to five minutes so the apply step can use the exact previewed data.
+User administration also provides `zammad_get_user_history` for recent account changes and `zammad_prepare_user_import` for a CSV dry-run and staged import. History omits related user assets and redacts values for secret-like attributes; the import accepts CSV content directly (up to 5 MiB), never reads a server-side path, excludes destructive CSV deletion, and returns aggregate counts and sanitized error codes only. The source CSV remains in one volatile plan for up to five minutes so the apply step can use the exact previewed data.
 
 Package operations can write executable code or reverse database migrations. Review the package source and the full preview before approval. The MCP does not run the listed dependency, migration, or service restart follow-up commands.
 
