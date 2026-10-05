@@ -1,76 +1,216 @@
-<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/221825e8-708e-4f35-992a-f9e6add9d24d" />
+<div align="center">
 
-# Zammad-Admin-MCP
+<img width="1672" height="941" alt="Zammad Admin MCP" src="https://github.com/user-attachments/assets/221825e8-708e-4f35-992a-f9e6add9d24d" />
 
-A local Python MCP server for reading and configuring allowlisted Zammad administration resources. Zammad configuration changes are staged through a preview tool and a separate apply tool. This MCP does not perform any configuration change merely by being loaded or by listing a resource.
+# Zammad Admin MCP
 
-## Current capabilities
+### Controlled administration interface between AI agents and Zammad
 
-- Read the server version and the allowlisted admin collections/objects.
-- Page collection reads with `page` and `per_page` (1–100).
-- Preserve the original read-only tool names for groups, roles, calendars, SLAs, triggers, and ticket states.
-- Prepare create, update, delete, or special configuration changes and return a redacted before/after preview with a five-minute, one-use plan ID.
-- Apply a prepared plan only after an explicit user approval in the conversation; apply re-reads the object and rejects a changed snapshot.
-- Restrict resource names, paths, object IDs, and HTTP methods to server-side definitions. There is no arbitrary URL/method/body tool.
-- Redact secret-like fields in tool results. Submitted credentials are held only in process memory while a plan is pending and are redacted from the preview.
-- Read and stage updates for individual Zammad settings through the fixed `/settings/{id}` API route. Settings writes accept only the setting name and its `state_current.value`; each requires high-impact acknowledgement.
-- Revoke an API token through the staged delete flow. Token creation is not exposed because Zammad returns a generated token only once and this MCP has no secure one-time secret delivery surface.
+A Model Context Protocol server for secure, auditable and permission-aware Zammad administration workflows.
 
-Writes require a Zammad API token with the corresponding permissions. The token permissions determine actual access; the MCP does not grant additional Zammad rights. The `Codex-Zammad-Anpassung` role's intended equality with Admin is preserved as an existing Zammad decision.
+</div>
 
-## Important limitations
+---
 
-- API coverage is not complete for every Zammad admin UI setting. LDAP/SSO and other authentication settings can be read and staged through `/settings`, but apply behavior for those fields has not been verified. Inbound mailbox configuration remains unavailable because a documented, version-pinned REST contract was not found. External IdP/proxy configuration is outside Zammad's API.
-- The Settings REST route used by the Zammad Admin UI returned 285 settings on the installed 7.1.2 server; reading an LDAP setting and preparing a staged setting preview worked. A real settings write was not performed, so update payload application still needs a controlled verification.
-- Zammad's published `latest` and `pre-release` documentation is not a version-pinned guarantee for the installed 7.1.2 instance. Confirm each endpoint and payload against that instance before relying on it.
-- The preview/apply check is a read-before-write check. Unless an endpoint supports an atomic conditional update, another client can still change the record in the small interval between the final read and write.
-- The server lock coordinates writes only inside this process. It does not serialize other MCP processes or Zammad administrators.
-- A plan ID is not human consent. The assistant must show the preview and obtain explicit approval before calling apply. A host with a mandatory per-write approval mechanism is preferable.
-- Creating or updating an object-manager attribute does not execute a database migration. Migration and restart operations are deliberately not included in generic writes.
-- `email_notification` is a separate high-impact operation: applying it calls Zammad's configure endpoint, which sends a real test email and saves the settings in the same request. It must be separately approved.
-- API token creation is not implemented; staged revocation is available. Authentication-provider settings can be read and staged through the generic fixed settings workflow, but apply behavior has not been separately validated. Inbound mailbox configuration is not implemented.
-- User and organization deletion use the generic staged workflow and are marked high impact. Review related records and the preview before approval.
+## Overview
 
-## Setup
+Zammad Admin MCP provides a controlled interface for MCP-compatible AI clients to interact with selected Zammad administration resources.
 
-Copy `.env.example` to `.env` and set `ZAMMAD_URL` and `ZAMMAD_HTTP_TOKEN`. Remote instances must use HTTPS; plain HTTP is accepted only for localhost or loopback addresses.
+The project is designed around one principle:
 
-Install and run:
+> AI systems may assist administration, but administrative control remains explicit, reviewable and bounded.
 
-```sh
-python -m venv .venv
-. .venv/bin/activate
-pip install -e .
-zammad-admin-mcp
+Instead of exposing unrestricted API access, Zammad Admin MCP introduces validation, preview workflows and controlled execution paths.
+
+```text
+AI Client
+    |
+    v
+MCP Protocol
+    |
+    v
+Zammad Admin MCP
+    |
+    +-- Resource Allowlist
+    +-- Validation Layer
+    +-- Preview / Approval Workflow
+    +-- Secret Redaction
+    +-- Audit-oriented Execution
+    |
+    v
+Zammad API
 ```
 
-Configure the MCP client with the absolute path to `.venv/bin/zammad-admin-mcp` and this project's working directory. Keep the token in the process environment or the ignored local `.env` file; never copy it into client configuration or Git.
+---
 
-## Main tools
+# Design Goals
+
+## Security by Design
+
+Zammad Admin MCP intentionally avoids becoming a generic API proxy.
+
+Implemented safeguards:
+
+- allowlisted resources and operations
+- controlled write workflows
+- preview before apply
+- explicit approval requirement
+- recursive secret redaction
+- no arbitrary URL forwarding
+- no arbitrary HTTP method execution
+- no direct Rails console access
+
+The MCP server does not grant additional Zammad permissions. The configured API token remains the authority.
+
+---
+
+# Architecture
+
+```mermaid
+flowchart LR
+
+A[AI Agent / MCP Client]
+B[Zammad Admin MCP]
+C[Validation & Approval]
+D[Zammad REST API]
+
+A --> B
+B --> C
+C --> D
+```
+
+The architecture separates intent, validation and execution.
+
+Administrative operations are not executed merely because the MCP server is connected.
+
+---
+
+# Capabilities
+
+## Read Operations
+
+- server version detection
+- allowlisted administration resources
+- object inspection
+- knowledge base access
+- paginated collection reads
+
+## Controlled Changes
+
+Changes follow a prepare/apply workflow:
+
+```text
+Prepare Change
+       |
+       v
+Generate Preview
+       |
+       v
+Explicit Approval
+       |
+       v
+Apply Change
+```
+
+Supported workflows include:
+
+- create operations
+- update operations
+- selected delete operations
+- selected high-impact configuration changes
+
+---
+
+# MCP Tools
+
+Core:
 
 - `zammad_server_version`
 - `zammad_list_admin_resources`
-- `zammad_list_admin_resource(resource)`
-- `zammad_get_admin_object(resource, object_id)`
-- `zammad_get_knowledge_base(knowledge_base_id)` and `zammad_get_knowledge_base_permissions(knowledge_base_id)`
-- `zammad_get_knowledge_base_record(knowledge_base_id, kind, record_id, translation_id)`
-- `zammad_prepare_admin_change(resource, operation, data, object_id, acknowledge_high_impact)`
-- `zammad_prepare_knowledge_base_settings_change(knowledge_base_id, data, acknowledge_high_impact)`
-- `zammad_prepare_knowledge_base_record_change(knowledge_base_id, kind, operation, data, record_id, acknowledge_high_impact)`
-- `zammad_apply_admin_change(plan_id, acknowledge_high_impact)`
-- Legacy readers: `zammad_list_groups`, `zammad_list_roles`, `zammad_list_roles_expanded`, `zammad_list_calendars`, `zammad_list_slas`, `zammad_list_triggers`, `zammad_list_ticket_states`
+- `zammad_list_admin_resource`
+- `zammad_get_admin_object`
+- `zammad_prepare_admin_change`
+- `zammad_apply_admin_change`
 
-Prepare is read-only. Apply is the only generic write tool. It consumes the plan even when the request fails, so inspect Zammad before retrying an uncertain operation. Destructive and high-impact changes require an additional acknowledgement field, but that field is not a substitute for explicit user approval.
+Knowledge base:
 
-## Security and behavior
+- `zammad_get_knowledge_base`
+- `zammad_get_knowledge_base_permissions`
+- `zammad_get_knowledge_base_record`
 
-The server follows no HTTP redirects, refuses non-HTTPS remote endpoints, validates IDs, emits generic API error messages without response bodies, and only sends requests to registered paths. Secret-like fields are redacted recursively from results and previews. No request payloads are logged.
+Compatibility readers:
 
-For a currently unimplemented admin area, add a fixed endpoint/resource definition and its specific side-effect, payload, secret, and rollback rules. Never add a caller-controlled path, method, or raw HTTP proxy.
+- groups
+- roles
+- calendars
+- SLAs
+- triggers
+- ticket states
 
-## References
+---
 
-- [Zammad REST API introduction](https://docs.zammad.org/en/latest/api/intro.html)
-- [Object manager API and migration warning](https://docs.zammad.org/en/latest/api/object.html)
-- [Outbound email API and live test-email behavior](https://docs.zammad.org/en/pre-release/api/email-notification.html)
-- See `ADMIN_COVERAGE.md` for the area-by-area coverage inventory.
+# Installation
+
+```bash
+git clone https://github.com/CyberG3niusIT/Zammad-Admin-MCP.git
+cd Zammad-Admin-MCP
+
+python -m venv .venv
+. .venv/bin/activate
+pip install -e .
+
+zammad-admin-mcp
+```
+
+Configure the MCP client with the absolute path to the executable.
+
+Store credentials only through environment variables or ignored local configuration.
+
+---
+
+# Limitations
+
+Zammad Admin MCP does not claim complete Zammad UI coverage.
+
+Currently outside the generic workflow:
+
+- fully verified system settings writes: `/settings` returned 285 settings on the installed 7.1.2 server and a read-only preview succeeded, but no apply was performed
+- API token creation: Zammad returns a generated token only once, and this MCP has no secure one-time delivery surface; metadata read and staged revocation are available
+- validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
+- inbound mailbox configuration: no documented, version-pinned REST contract was found
+- unrestricted object manager migrations
+
+New capabilities should receive dedicated workflows with defined permissions, validation and side effects.
+
+---
+
+# Development Principles
+
+Every administrative capability should define:
+
+- required permissions
+- affected resources
+- validation rules
+- secret handling
+- failure behavior
+- rollback considerations
+
+The objective is not maximum automation.
+
+The objective is reliable automation.
+
+---
+
+# References
+
+- [Zammad REST API](https://docs.zammad.org/en/latest/api/intro.html)
+- [Object Manager API](https://docs.zammad.org/en/latest/api/object.html)
+- [Email Notification API](https://docs.zammad.org/en/pre-release/api/email-notification.html)
+
+See `ADMIN_COVERAGE.md` for detailed coverage information.
+
+---
+
+## License
+
+Open source project by CyberG3niusIT.
