@@ -133,7 +133,7 @@ _RESOURCES: dict[str, Resource] = {
     "checklist_templates": Resource("/checklist_templates", risk="Changes reusable checklists available to agents.", high_impact=True),
     "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
-    "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
+    "users": Resource("/users", operations=frozenset({"create", "update", "delete", "unlock"}), risk="Changes user identity, roles, and access; unlocking permits a locked account to authenticate again.", high_impact=True),
     "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update", "delete"}), risk="Attribute changes are queued until migration; executing a removal migration drops the database column and permanently deletes its values.", high_impact=True),
     "user_access_tokens": Resource(
         "/user_access_token",
@@ -426,6 +426,7 @@ async def _request(
         "/tickets/selector",
         "/applications/token",
         "/settings/ticket_agent_default_notifications/apply_to_all",
+        "/calendars/timezones",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -460,6 +461,8 @@ async def _request(
     ticket_selector_path = path == "/tickets/selector"
     oauth_application_token_path = path == "/applications/token"
     time_accounting_report_path = bool(re.fullmatch(r"/time_accounting/log/(?:by_activity|by_ticket|by_customer|by_organization)/\d{4}/\d{1,2}", path))
+    user_unlock_path = bool(re.fullmatch(r"/users/unlock/\d+", path))
+    user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
     fixed_special_paths = (
         email_group_path, whatsapp_action_path, microsoft365_group_path,
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
@@ -470,6 +473,7 @@ async def _request(
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
+        user_unlock_path, user_two_factor_path,
     )
     if path not in allowed and not any(fixed_special_paths):
         raise ValueError("Unsupported Zammad API resource")
@@ -485,6 +489,14 @@ async def _request(
         raise ValueError("Time accounting reports support GET only")
     if path == "/settings/ticket_agent_default_notifications/apply_to_all" and method != "POST":
         raise ValueError("Applying ticket agent notification defaults supports POST only")
+    if path == "/calendars/timezones" and method != "GET":
+        raise ValueError("Calendar timezone lookup supports GET only")
+    if user_unlock_path and method != "PUT":
+        raise ValueError("User unlock supports PUT only")
+    if user_two_factor_path:
+        expected_method = "GET" if path.endswith("/enabled_authentication_methods") else "DELETE"
+        if method != expected_method:
+            raise ValueError("Administrative two-factor methods support only their Zammad route method")
     return await _send_api_request(
         method, path, payload, params,
         files=files,
@@ -500,6 +512,19 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
 async def zammad_server_version() -> str:
     """Read the version of the connected Zammad instance."""
     return _json(await _get("/version"))
+
+
+@mcp.tool()
+async def zammad_list_calendar_timezones() -> str:
+    """List timezone choices used by Zammad calendar configuration."""
+    result = await _get("/calendars/timezones")
+    timezones = result.get("timezones") if isinstance(result, Mapping) else None
+    if not isinstance(timezones, Mapping) or any(
+        not isinstance(name, str) or isinstance(offset, bool) or not isinstance(offset, int)
+        for name, offset in timezones.items()
+    ):
+        raise RuntimeError("Zammad did not return calendar timezones")
+    return _json({"timezones": timezones})
 
 
 @mcp.tool()
@@ -526,6 +551,164 @@ async def _ticket_agent_notification_setting_snapshot() -> Mapping[str, Any]:
     if len(matches) != 1:
         raise RuntimeError("Zammad did not return exactly one ticket agent notification setting")
     return matches[0]
+
+
+def _project_user_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value[key]
+        for key in ("id", "firstname", "lastname", "login", "email")
+        if key in value
+    }
+
+
+async def _user_unlock_snapshot(user_id: int) -> dict[str, Any]:
+    user = await _get(f"/users/{user_id}")
+    settings = await _get("/settings")
+    if not isinstance(user, Mapping) or user.get("id") != user_id:
+        raise RuntimeError("Zammad did not return the selected user")
+    if not isinstance(settings, list):
+        raise RuntimeError("Zammad did not return security settings")
+    matches = [
+        item for item in settings
+        if isinstance(item, Mapping) and item.get("name") == "password_max_login_failed"
+    ]
+    current = matches[0].get("state_current") if len(matches) == 1 else None
+    limit = current.get("value") if isinstance(current, Mapping) else None
+    failed = user.get("login_failed")
+    if isinstance(limit, bool) or not isinstance(limit, int) or isinstance(failed, bool) or not isinstance(failed, int):
+        raise RuntimeError("Zammad did not return the account lockout state")
+    if failed <= limit:
+        raise ValueError("The selected user is not locked by the configured failed-login threshold")
+    return {
+        "user": {**_project_user_identity(user), "login_failed": failed},
+        "password_max_login_failed": limit,
+    }
+
+
+async def _user_two_factor_snapshot(user_id: int) -> dict[str, Any]:
+    user = await _get(f"/users/{user_id}")
+    methods = await _get(f"/users/{user_id}/admin_two_factor/enabled_authentication_methods")
+    if not isinstance(user, Mapping) or user.get("id") != user_id or not isinstance(methods, list):
+        raise RuntimeError("Zammad did not return the selected user and two-factor methods")
+    names = []
+    for item in methods:
+        if not isinstance(item, Mapping) or not isinstance(item.get("method"), str):
+            raise RuntimeError("Zammad returned an invalid two-factor method")
+        names.append(item["method"])
+    if len(names) != len(set(names)):
+        raise RuntimeError("Zammad returned duplicate two-factor methods")
+    return {"user": _project_user_identity(user), "methods": names}
+
+
+@mcp.tool()
+async def zammad_get_user_two_factor_methods(user_id: int) -> str:
+    """Read enabled two-factor method names for one user without credential details."""
+    user_id = _validate_id(user_id)
+    snapshot = await _user_two_factor_snapshot(user_id)
+    return _json({"user": snapshot["user"], "enabled_methods": snapshot["methods"]})
+
+
+@mcp.tool()
+async def zammad_prepare_user_two_factor_change(
+    user_id: int,
+    operation: Literal["remove_method", "remove_all"],
+    method: str | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview removal of one or all of a user's configured two-factor methods."""
+    global _PLAN_CLEANER
+    user_id = _validate_id(user_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Removing two-factor authentication is high impact; set acknowledge_high_impact=true")
+    snapshot = await _user_two_factor_snapshot(user_id)
+    if operation == "remove_method":
+        if not isinstance(method, str) or method not in snapshot["methods"]:
+            raise ValueError("method must identify an enabled two-factor method for this user")
+        after_methods = [item for item in snapshot["methods"] if item != method]
+    else:
+        if method is not None:
+            raise ValueError("remove_all does not accept method")
+        if not snapshot["methods"]:
+            raise ValueError("The selected user has no configured two-factor methods")
+        after_methods = []
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__user_two_factor_action__",
+        "operation": operation,
+        "object_id": user_id,
+        "data": {"method": method} if method is not None else {},
+        "fingerprint": _digest(snapshot),
+        "before": snapshot,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "user_two_factor_authentication",
+        "operation": operation,
+        "user": snapshot["user"],
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Removing methods can reduce or remove this user's two-factor sign-in protection; the user may need to configure methods again.",
+        "before": {"enabled_methods": snapshot["methods"]},
+        "after": {"enabled_methods": after_methods},
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_user_unlock(
+    user_id: int,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview unlocking a user whose failed-login count exceeds Zammad's configured threshold."""
+    global _PLAN_CLEANER
+    user_id = _validate_id(user_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Unlocking an account is high impact; set acknowledge_high_impact=true to prepare it")
+    snapshot = await _user_unlock_snapshot(user_id)
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__user_unlock__",
+        "operation": "unlock",
+        "object_id": user_id,
+        "data": {},
+        "fingerprint": _digest(snapshot),
+        "before": snapshot,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "user_unlock",
+        "operation": "unlock",
+        "user": {key: value for key, value in snapshot["user"].items() if key != "login_failed"},
+        "failed_login_count": snapshot["user"]["login_failed"],
+        "configured_limit": snapshot["password_max_login_failed"],
+        "after": {"login_failed": 0, "authentication_allowed": True},
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Allows the locked account to authenticate again.",
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -595,7 +778,10 @@ async def zammad_list_admin_resources() -> str:
         "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
+        "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
+        "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
+        "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
     })
 
 
@@ -2664,6 +2850,12 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__ticket_notification_reset__":
             current = await _ticket_agent_notification_setting_snapshot()
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__user_two_factor_action__":
+            current = await _user_two_factor_snapshot(plan["object_id"])
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__user_unlock__":
+            current = await _user_unlock_snapshot(plan["object_id"])
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -2987,6 +3179,27 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "job_id_returned": False,
                 "agent_preferences_returned": False,
             }
+        elif resource == "__user_two_factor_action__":
+            user_id = _validate_id(plan["object_id"])
+            if operation == "remove_method":
+                await _request(
+                    "DELETE",
+                    f"/users/{user_id}/admin_two_factor/remove_authentication_method",
+                    {"method": data["method"]},
+                )
+            elif operation == "remove_all":
+                await _request("DELETE", f"/users/{user_id}/admin_two_factor/remove_all_authentication_methods")
+            else:
+                raise ValueError("Unsupported user two-factor operation")
+            result = {
+                "user_id": user_id,
+                "methods_removed": "all" if operation == "remove_all" else [data["method"]],
+                "credential_details_returned": False,
+            }
+        elif resource == "__user_unlock__":
+            user_id = _validate_id(plan["object_id"])
+            await _request("PUT", f"/users/unlock/{user_id}")
+            result = {"user_id": user_id, "unlocked": True, "login_failed": 0}
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -3009,6 +3222,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__data_privacy_deletion__": "data_privacy_tasks",
         "__oauth_application_token__": "oauth_applications",
         "__ticket_notification_reset__": "ticket_agent_notifications",
+        "__user_two_factor_action__": "user_two_factor_authentication",
+        "__user_unlock__": "user_unlock",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -3022,6 +3237,10 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The token was issued for the current Zammad user and stored in the local secret store. Do not retry if delivery is uncertain; inspect application access first."
     elif resource == "__ticket_notification_reset__":
         response_note = "A background reset was queued. No job ID is returned. If the outcome is uncertain, inspect agent notification preferences before retrying."
+    elif resource == "__user_two_factor_action__":
+        response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
+    elif resource == "__user_unlock__":
+        response_note = "The user was unlocked. Inspect the failed-login counter before retrying if the outcome is uncertain."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

@@ -118,6 +118,7 @@ Supported workflows include:
 - update operations
 - selected delete operations
 - selected high-impact configuration changes
+- `zammad_list_calendar_timezones` lists the timezone choices used by Zammad's calendar settings
 - staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
 - jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
@@ -139,6 +140,7 @@ Supported workflows include:
 - Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
 - Maintenance and Time Accounting settings use the staged Settings workflow; Time Accounting activity types support staged create/update, and monthly reports are available with bounded, privacy-projected results
 - `zammad_prepare_ticket_agent_notification_apply` stages asynchronous application of the current default matrix to every user with `ticket.agent` permission; the plan fingerprints that matrix, requires high-impact approval, and reports that Zammad returns no job ID
+- `zammad_get_user_two_factor_methods`, `zammad_prepare_user_two_factor_change`, and `zammad_prepare_user_unlock` expose enabled method names and stage high-impact security changes; unlock is limited to accounts past the configured failed-login threshold, and credential details are never returned
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 
