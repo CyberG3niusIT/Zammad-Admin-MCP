@@ -1316,6 +1316,16 @@ async def zammad_get_knowledge_base_category_permissions(knowledge_base_id: int,
     """Read configured and inherited role access for one Knowledge Base category."""
     kb_id = _validate_id(knowledge_base_id)
     category = _validate_id(category_id)
+    category_snapshot = await _get(f"/knowledge_bases/{kb_id}/categories/{category}")
+    if not isinstance(category_snapshot, Mapping):
+        raise RuntimeError("Zammad did not return the Knowledge Base category snapshot")
+    try:
+        snapshot_category_id = _validate_id(category_snapshot.get("id"))
+        snapshot_kb_id = _validate_id(category_snapshot.get("knowledge_base_id"))
+    except ValueError as exc:
+        raise RuntimeError("Zammad returned an invalid Knowledge Base category snapshot") from exc
+    if snapshot_category_id != category or snapshot_kb_id != kb_id:
+        raise ValueError("category_id does not identify a category in the selected Knowledge Base")
     return _json(await _get(f"/knowledge_bases/{kb_id}/categories/{category}/permissions"))
 
 
