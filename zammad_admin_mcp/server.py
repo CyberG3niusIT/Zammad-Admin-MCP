@@ -82,6 +82,9 @@ from zammad_admin_mcp.admin_schemas.time_accounting import project_types as proj
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
+from zammad_admin_mcp.admin_schemas.knowledge_base_menu import preview_after as preview_knowledge_base_menu_after
+from zammad_admin_mcp.admin_schemas.knowledge_base_menu import project_snapshot as project_knowledge_base_menu_snapshot
+from zammad_admin_mcp.admin_schemas.knowledge_base_menu import validate_update as validate_knowledge_base_menu_update
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
@@ -504,6 +507,7 @@ async def _request(
         "/organizations/import",
         "/calendars/timezones",
         "/knowledge_bases/init",
+        "/knowledge_bases/manage/init",
         "/http_logs",
         "/proxy",
     }
@@ -531,6 +535,7 @@ async def _request(
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions|/categories/\d+/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
     knowledge_base_lifecycle_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/(?:activate|deactivate)", path))
+    knowledge_base_menu_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/update_menu_items", path))
     translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
     translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
     translation_reset_path = bool(re.fullmatch(r"/translations/reset/\d+", path))
@@ -552,7 +557,8 @@ async def _request(
         microsoft_graph_verify_path, microsoft365_inbound_path, microsoft_graph_inbound_path,
         google_action_path, google_group_path, google_verify_path, google_inbound_path,
         settings_image_path, settings_reset_path, item_path, knowledge_base_path,
-        knowledge_base_settings_path, knowledge_base_lifecycle_path, translation_search_path, translation_item_path,
+        knowledge_base_settings_path, knowledge_base_lifecycle_path, knowledge_base_menu_path,
+        translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
@@ -591,8 +597,12 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
         raise ValueError("Knowledge Base inventory uses its read-only initialization route")
+    if path == "/knowledge_bases/manage/init" and method != "GET":
+        raise ValueError("Knowledge Base manager inventory supports GET only")
     if knowledge_base_lifecycle_path and method != "PATCH":
         raise ValueError("Knowledge Base lifecycle actions support PATCH only")
+    if knowledge_base_menu_path and method != "PATCH":
+        raise ValueError("Knowledge Base menu updates support PATCH only")
     if (path == "/http_logs" or http_log_facility_path) and method != "GET":
         raise ValueError("HTTP logs are available as read-only metadata")
     if path == "/proxy" and method != "POST":
@@ -1002,6 +1012,7 @@ async def zammad_list_admin_resources() -> str:
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
+        "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
         "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
@@ -1595,6 +1606,22 @@ async def zammad_list_knowledge_bases() -> str:
     """Discover Knowledge Bases and translated category/answer titles without returning answer bodies."""
     assets = await _request("POST", "/knowledge_bases/init", {})
     return _json(project_knowledge_base_inventory(assets))
+
+
+async def _knowledge_base_menu_snapshot(knowledge_base_id: int, location: str) -> dict[str, Any]:
+    assets = await _get("/knowledge_bases/manage/init")
+    return project_knowledge_base_menu_snapshot(assets, knowledge_base_id, location)
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_menu_items(
+    knowledge_base_id: int,
+    location: Literal["header", "footer"],
+) -> str:
+    """Read all public menu items for one Knowledge Base location and every locale."""
+    kb_id = _validate_id(knowledge_base_id)
+    snapshot = await _knowledge_base_menu_snapshot(kb_id, location)
+    return _json(snapshot)
 
 
 @mcp.tool()
@@ -2855,6 +2882,48 @@ async def zammad_prepare_knowledge_base_lifecycle_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_menu_change(
+    knowledge_base_id: int,
+    location: Literal["header", "footer"],
+    menu_items_sets: list[dict[str, Any]],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare a complete public Knowledge Base menu update for every locale."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Public Knowledge Base menu changes require acknowledge_high_impact=true")
+    before = await _knowledge_base_menu_snapshot(kb_id, location)
+    normalized = validate_knowledge_base_menu_update(menu_items_sets, before)
+    after = preview_knowledge_base_menu_after(before, normalized)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_menu__", "operation": "update",
+        "object_id": kb_id, "location": location,
+        "data": {"menu_items_sets": normalized}, "before": before,
+        "fingerprint": _digest(before), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_menu_items", "operation": "update",
+        "object_id": kb_id, "location": location,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes public navigation links and their order for every Knowledge Base locale.",
+        "before": before, "after": after, "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_record_change(
     knowledge_base_id: int,
     kind: Literal["answers", "categories"],
@@ -3746,6 +3815,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__organization_import__":
             current = await _organization_import_inventory_snapshot()
             current_fingerprint = current["fingerprint"]
+        elif plan["resource"] == "__knowledge_base_menu__":
+            current = await _knowledge_base_menu_snapshot(plan["object_id"], plan["location"])
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -3981,6 +4053,18 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 f"/knowledge_bases/manage/{plan['object_id']}/{operation}",
             )
             result = {"knowledge_base_id": plan["object_id"], "active": data["active"]}
+        elif resource == "__knowledge_base_menu__":
+            await _request(
+                "PATCH",
+                f"/knowledge_bases/manage/{plan['object_id']}/update_menu_items",
+                data,
+            )
+            result = {
+                "knowledge_base_id": plan["object_id"],
+                "location": plan["location"],
+                "locales_updated": len(data["menu_items_sets"]),
+                "updated": True,
+            }
         elif resource in {"__knowledge_base_permissions__", "__knowledge_base_category_permissions__"}:
             result = await _request("PATCH", plan["write_path"], data)
             result = {"updated": isinstance(result, Mapping), "permission_details_returned": False}
@@ -4189,6 +4273,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__user_import__": "user_imports",
         "__organization_import__": "organization_imports",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
+        "__knowledge_base_menu__": "knowledge_base_menu_items",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
