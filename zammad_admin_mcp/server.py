@@ -82,6 +82,7 @@ from zammad_admin_mcp.admin_schemas.time_accounting import project_types as proj
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
+from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -225,6 +226,26 @@ _EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
 _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
 _EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
 _EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
+_HTTP_LOG_FACILITY_PATHS = {
+    "AI::Provider": "/http_logs/AI::Provider",
+    "check_mk": "/http_logs/check_mk",
+    "clearbit": "/http_logs/clearbit",
+    "cti": "/http_logs/cti",
+    "EWS": "/http_logs/EWS",
+    "GitHub": "/http_logs/GitHub",
+    "GitLab": "/http_logs/GitLab",
+    "idoit": "/http_logs/idoit",
+    "ldap": "/http_logs/ldap",
+    "MicrosoftGraph": "/http_logs/MicrosoftGraph",
+    "PGP": "/http_logs/PGP",
+    "placetel": "/http_logs/placetel",
+    "S/MIME": "/http_logs/S/MIME",
+    "SAML": "/http_logs/SAML",
+    "sipagte.io": "/http_logs/sipagte.io",
+    "sipgate.io": "/http_logs/sipgate.io",
+    "webhook": "/http_logs/webhook",
+    "WhatsApp::Business": "/http_logs/WhatsApp::Business",
+}
 _MESSAGE_CHANNEL_RESOURCES = {"sms_channels", "telegram_channels", "whatsapp_channels"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
@@ -474,6 +495,7 @@ async def _request(
         "/settings/ticket_agent_default_notifications/apply_to_all",
         "/calendars/timezones",
         "/knowledge_bases/init",
+        "/http_logs",
         "/proxy",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
@@ -511,6 +533,7 @@ async def _request(
     time_accounting_report_path = bool(re.fullmatch(r"/time_accounting/log/(?:by_activity|by_ticket|by_customer|by_organization)/\d{4}/\d{1,2}", path))
     user_unlock_path = bool(re.fullmatch(r"/users/unlock/\d+", path))
     user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
+    http_log_facility_path = path in _HTTP_LOG_FACILITY_PATHS.values()
     fixed_special_paths = (
         email_group_path, whatsapp_action_path, microsoft365_group_path,
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
@@ -522,6 +545,7 @@ async def _request(
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
         user_unlock_path, user_two_factor_path,
+        http_log_facility_path,
         bool(re.fullmatch(r"/integration/pgp/key/\d+", path)),
     )
     crypto_routes = {
@@ -549,6 +573,8 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
         raise ValueError("Knowledge Base inventory uses its read-only initialization route")
+    if (path == "/http_logs" or http_log_facility_path) and method != "GET":
+        raise ValueError("HTTP logs are available as read-only metadata")
     if path == "/proxy" and method != "POST":
         raise ValueError("Proxy connectivity checks support POST only")
     if user_unlock_path and method != "PUT":
@@ -932,6 +958,7 @@ async def zammad_list_admin_resources() -> str:
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
+        "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
         "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
         "knowledge_base_category_permissions": {"operations": ["read", "update"], "risk": "Changes inherited role access for a category and can affect descendant categories; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
@@ -949,6 +976,32 @@ async def zammad_list_admin_resources() -> str:
         "pgp_keys": {"operations": ["read", "create", "delete"], "risk": "Manages PGP private keys; key material and passphrases are never returned."},
         "smime_certificates": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME certificates; deletion also removes an associated private key."},
         "smime_private_keys": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME private keys; key material and passphrases are never returned."},
+    })
+
+
+@mcp.tool()
+async def zammad_list_http_logs(
+    facility: Literal[
+        "AI::Provider", "check_mk", "clearbit", "cti", "EWS", "GitHub", "GitLab", "idoit", "ldap",
+        "MicrosoftGraph", "PGP", "placetel", "S/MIME", "SAML", "sipagte.io", "sipgate.io",
+        "webhook", "WhatsApp::Business",
+    ] | None = None,
+    limit: int = 50,
+) -> str:
+    """List recent permitted integration HTTP logs without URLs or request/response payloads."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be an integer between 1 and 100")
+    if facility is not None and facility not in _HTTP_LOG_FACILITY_PATHS:
+        raise ValueError("facility must be one of the supported Zammad HTTP log facilities")
+    path = _HTTP_LOG_FACILITY_PATHS.get(facility, "/http_logs")
+    items = project_http_logs(await _get(path, {"limit": limit}))
+    return _json({
+        "facility_filter": facility,
+        "limit": limit,
+        "returned": len(items),
+        "items": items,
+        "urls_returned": False,
+        "request_and_response_payloads_returned": False,
     })
 
 

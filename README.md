@@ -197,7 +197,10 @@ PGP and S/MIME cryptographic material:
 Monitoring:
 
 - `zammad_get_monitoring_health`
+- `zammad_list_http_logs`
 - `zammad_prepare_monitoring_action`
+
+HTTP log reads return at most 100 recent entries from the current user's permitted facilities. They include only ID, facility, direction, method, and timestamp; URL and request/response data are omitted.
 
 Packages:
 
