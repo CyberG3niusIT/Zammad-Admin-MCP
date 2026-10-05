@@ -28,6 +28,7 @@ from zammad_admin_mcp.security import _store_generated_token
 from zammad_admin_mcp.security import _validate_setting_secret_reference
 from zammad_admin_mcp.security import _validate_token_create_payload
 from zammad_admin_mcp.admin_schemas.chats import validate_payload as validate_chat_payload
+from zammad_admin_mcp.admin_schemas.facebook_channels import validate_payload as validate_facebook_channel_payload
 from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
 from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
@@ -77,6 +78,11 @@ _RESOURCES: dict[str, Resource] = {
     "whatsapp_channels": Resource(
         "/channels/admin/whatsapp", operations=frozenset({"create", "update", "delete", "enable", "disable", "preload"}), item=False,
         risk="Changes a WhatsApp Business integration or calls Meta to verify/preload phone numbers.", high_impact=True,
+    ),
+    "facebook_channels": Resource(
+        "/channels_facebook", operations=frozenset({"update", "delete", "enable", "disable"}),
+        risk="Changes or removes an existing Facebook page integration.",
+        high_impact=True, item=False,
     ),
     "report_profiles": Resource("/report_profiles"),
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
@@ -283,6 +289,7 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
         "/channels_telegram_enable", "/channels_telegram_disable",
+        "/channels_facebook_enable", "/channels_facebook_disable",
         "/channels/admin/whatsapp/preload",
         "/integration/ldap/discover", "/integration/ldap/bind",
         "/integration/ldap/job_try", "/integration/ldap/job_start",
@@ -346,6 +353,8 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
             return _json(_project_messaging_channels(channel_data))
         return _json(_project_email_channels(channel_data))
     if resource in _MESSAGE_CHANNEL_RESOURCES:
+        return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
+    if resource == "facebook_channels":
         return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
     spec = _resource(resource)
     result = await _get(spec.path, params)
@@ -559,6 +568,12 @@ async def zammad_get_knowledge_base_record(
 async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any:
     if resource in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
         return await _get(_SPECIAL_READ_PATH)
+    if resource == "facebook_channels":
+        collection = await _get(_resource(resource).path)
+        assets = collection.get("assets", {}) if isinstance(collection, Mapping) else {}
+        channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+        channel = channel_assets.get(str(_validate_id(object_id))) if isinstance(channel_assets, Mapping) else None
+        return {"assets": {"Channel": {str(object_id): channel}}} if isinstance(channel, Mapping) else {"assets": {"Channel": {}}}
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         return await _get(_resource(resource).path)
     if resource == "__knowledge_base_settings__":
@@ -931,6 +946,15 @@ async def zammad_prepare_admin_change(
             _validate_id(data["group_id"])
         elif data:
             raise ValueError(f"{operation} does not accept data")
+    elif resource == "facebook_channels":
+        spec = _resource(resource)
+        if operation not in spec.operations:
+            raise ValueError("facebook_channels supports update, enable, disable, or delete")
+        object_id = _validate_id(object_id)
+        if operation == "update":
+            validate_facebook_channel_payload(data)
+        elif data:
+            raise ValueError(f"{operation} does not accept data")
     elif resource in _MESSAGE_CHANNEL_RESOURCES:
         spec = _resource(resource)
         if operation not in spec.operations:
@@ -1001,6 +1025,35 @@ async def zammad_prepare_admin_change(
         validate_postmaster_filter_payload(operation, data)
 
     before = ldap_before if ldap_before is not None else await _snapshot(resource, operation, object_id)
+    facebook_requested_pages: Mapping[str, Any] | None = None
+    facebook_channel: Mapping[str, Any] | None = None
+    if resource == "facebook_channels":
+        assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+        channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+        facebook_channel = channel_assets.get(str(object_id)) if isinstance(channel_assets, Mapping) else None
+        if not isinstance(facebook_channel, Mapping) or facebook_channel.get("area") != "Facebook::Account":
+            raise ValueError("object_id must identify an existing Facebook account channel")
+        if operation == "update":
+            requested_pages = preview_data["pages"]
+            options = facebook_channel.get("options", {})
+            existing_pages = options.get("pages", []) if isinstance(options, Mapping) else []
+            page_ids = {
+                str(page.get("id")) for page in existing_pages
+                if isinstance(page, Mapping) and page.get("id") is not None
+            } if isinstance(existing_pages, list) else set()
+            if set(requested_pages) - page_ids:
+                raise ValueError("pages must identify Facebook pages already linked to this channel")
+            current_options = dict(options) if isinstance(options, Mapping) else {}
+            current_sync = current_options.get("sync", {})
+            sync = dict(current_sync) if isinstance(current_sync, Mapping) else {}
+            current_page_settings = sync.get("pages", {})
+            page_settings = dict(current_page_settings) if isinstance(current_page_settings, Mapping) else {}
+            page_settings.update(requested_pages)
+            sync["pages"] = page_settings
+            current_options["sync"] = sync
+            facebook_requested_pages = requested_pages
+            data = {"id": object_id, "options": current_options}
+            preview_data = {"pages": requested_pages}
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         before_preview = _project_messaging_channels(before)
         if operation in {"create", "update"}:
@@ -1019,6 +1072,14 @@ async def zammad_prepare_admin_change(
                 "input": preview_data,
                 "side_effects_on_apply": ["make an external request to Meta"],
             }
+        else:
+            after = None
+    elif resource == "facebook_channels":
+        before_preview = _project_messaging_channels(before)
+        if operation == "update":
+            after = {"id": object_id, "page_group_assignments": preview_data["pages"]}
+        elif operation in {"enable", "disable"}:
+            after = {"id": object_id, "active": operation == "enable"}
         else:
             after = None
     elif resource == "user_access_tokens" and operation == "create":
@@ -1040,6 +1101,15 @@ async def zammad_prepare_admin_change(
             if not isinstance(role_before, Mapping) or role_before.get("active") is not True:
                 raise ValueError(f"group_role_map role {role_id} must identify an active role")
             dependencies.append({"path": f"/roles/{role_id}", "fingerprint": _digest(role_before)})
+    if resource == "facebook_channels" and operation == "update" and facebook_requested_pages is not None:
+        for assignment in facebook_requested_pages.values():
+            group_id = assignment.get("group_id") if isinstance(assignment, Mapping) else None
+            if group_id in (None, ""):
+                continue
+            group_before = await _get(f"/groups/{_validate_id(group_id)}")
+            if not isinstance(group_before, Mapping) or group_before.get("active") is not True:
+                raise ValueError(f"Facebook page group_id {group_id} must identify an active group")
+            dependencies.append({"path": f"/groups/{group_id}", "fingerprint": _digest(group_before)})
     if resource == _EMAIL_ACCOUNT_RESOURCE and data.get("channel_id") is not None:
         current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
         if data["channel_id"] not in current_ids:
@@ -1072,6 +1142,14 @@ async def zammad_prepare_admin_change(
             "requested_permissions_are_active": True,
         }
         after = preview_data
+    elif resource == "facebook_channels":
+        before_preview = _project_messaging_channels(before)
+        if operation == "update":
+            after = {"id": object_id, "page_group_assignments": preview_data["pages"]}
+        elif operation in {"enable", "disable"}:
+            after = {"id": object_id, "active": operation == "enable"}
+        else:
+            after = None
     elif operation == "create":
         after = preview_data
     elif resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -1099,7 +1177,7 @@ async def zammad_prepare_admin_change(
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", *_MESSAGE_CHANNEL_RESOURCES} and not (
         resource == "user_access_tokens" and operation == "create"
     ):
         before_preview = before
@@ -1215,6 +1293,16 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 result = await _request("POST", f"{_EMAIL_CHANNEL_GROUP_PATH}/{channel_id}", data)
             else:
                 raise ValueError("Unsupported email channel operation")
+        elif resource == "facebook_channels":
+            channel_id = plan["object_id"]
+            if operation == "update":
+                result = await _request("POST", f"/channels_facebook/{channel_id}", data)
+            elif operation in {"enable", "disable"}:
+                result = await _request("POST", f"/channels_facebook_{operation}", {"id": channel_id})
+            elif operation == "delete":
+                result = await _request("DELETE", "/channels_facebook", {"id": channel_id})
+            else:
+                raise ValueError("Unsupported Facebook channel operation")
         elif resource in _MESSAGE_CHANNEL_RESOURCES:
             spec = _resource(resource)
             if operation == "create":
