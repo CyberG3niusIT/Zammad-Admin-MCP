@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import ipaddress
 import json
 import re
@@ -50,6 +51,16 @@ from zammad_admin_mcp.admin_schemas.packages import validate_install_payload as 
 from zammad_admin_mcp.admin_schemas.ssl_certificates import project_certificate as project_ssl_certificate
 from zammad_admin_mcp.admin_schemas.ssl_certificates import project_collection as project_ssl_certificate_collection
 from zammad_admin_mcp.admin_schemas.ssl_certificates import validate_payload as validate_ssl_certificate_payload
+from zammad_admin_mcp.admin_schemas.crypto_material import project_pgp_collection
+from zammad_admin_mcp.admin_schemas.crypto_material import project_pgp_key
+from zammad_admin_mcp.admin_schemas.crypto_material import project_smime_collection
+from zammad_admin_mcp.admin_schemas.crypto_material import project_smime_certificate
+from zammad_admin_mcp.admin_schemas.crypto_material import project_smime_private_key_collection
+from zammad_admin_mcp.admin_schemas.crypto_material import validate_materialized_private_key
+from zammad_admin_mcp.admin_schemas.crypto_material import validate_pgp_material
+from zammad_admin_mcp.admin_schemas.crypto_material import validate_pgp_create
+from zammad_admin_mcp.admin_schemas.crypto_material import validate_smime_certificate
+from zammad_admin_mcp.admin_schemas.crypto_material import validate_smime_private_key
 from zammad_admin_mcp.admin_schemas.system_report import project_summary as project_system_report_summary
 from zammad_admin_mcp.admin_schemas.ai_admin import project_collection as project_ai_collection
 from zammad_admin_mcp.admin_schemas.ai_admin import project_object as project_ai_object
@@ -217,6 +228,7 @@ _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
 _PLANS: dict[str, dict[str, Any]] = {}
 _PLAN_LOCK = asyncio.Lock()
+_CRYPTO_SNAPSHOT_KEY = secrets.token_bytes(32)
 _WRITE_LOCK = asyncio.Lock()
 _PLAN_CLEANER: asyncio.Task[None] | None = None
 
@@ -265,6 +277,29 @@ def _validate_sso_trusted_ip_ranges(value: str) -> list[ipaddress.IPv4Network | 
 def _digest(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _crypto_digest(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hmac.new(_CRYPTO_SNAPSHOT_KEY, raw.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+async def _crypto_material_snapshot(resource: str, object_id: int | None = None) -> Any:
+    if resource == "pgp_keys":
+        if object_id is None:
+            return await _get("/integration/pgp/key")
+        return await _get(f"/integration/pgp/key/{_validate_id(object_id)}")
+    if resource in {"smime_certificates", "smime_private_keys"}:
+        certificates = await _get("/integration/smime/certificate")
+        if not isinstance(certificates, list):
+            raise RuntimeError("Zammad did not return S/MIME certificate inventory")
+        if object_id is None:
+            return certificates
+        matches = [item for item in certificates if isinstance(item, Mapping) and item.get("id") == object_id]
+        if len(matches) != 1:
+            raise ValueError("object_id must identify exactly one existing S/MIME certificate")
+        return matches[0]
+    raise ValueError("Unsupported cryptographic material resource")
 
 
 def _proxy_test_fingerprint(data: Mapping[str, Any]) -> str:
@@ -484,8 +519,16 @@ async def _request(
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
         user_unlock_path, user_two_factor_path,
+        bool(re.fullmatch(r"/integration/pgp/key/\d+", path)),
     )
-    if path not in allowed and not any(fixed_special_paths):
+    crypto_routes = {
+        ("GET", "/integration/pgp/status"), ("GET", "/integration/pgp/key"),
+        ("POST", "/integration/pgp/key"), ("GET", "/integration/smime/certificate"),
+        ("POST", "/integration/smime/certificate"), ("DELETE", "/integration/smime/certificate"),
+        ("POST", "/integration/smime/private_key"), ("DELETE", "/integration/smime/private_key"),
+    }
+    pgp_item_route = bool(re.fullmatch(r"/integration/pgp/key/\d+", path))
+    if path not in allowed and not any(fixed_special_paths) and (method, path) not in crypto_routes:
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
@@ -509,6 +552,10 @@ async def _request(
         expected_method = "GET" if path.endswith("/enabled_authentication_methods") else "DELETE"
         if method != expected_method:
             raise ValueError("Administrative two-factor methods support only their Zammad route method")
+    if pgp_item_route and method not in {"GET", "DELETE"}:
+        raise ValueError("PGP key item routes support only GET and DELETE")
+    if path in {route for _, route in crypto_routes} and (method, path) not in crypto_routes:
+        raise ValueError("Unsupported Zammad integration route method")
     return await _send_api_request(
         method, path, payload, params,
         files=files,
@@ -857,6 +904,20 @@ async def zammad_prepare_ticket_agent_notification_apply(
 
 
 @mcp.tool()
+async def zammad_get_pgp_status() -> str:
+    """Check whether Zammad reports its PGP integration as available."""
+    status = await _get("/integration/pgp/status")
+    return _json({"available": isinstance(status, Mapping) and "error" not in status})
+
+
+@mcp.tool()
+async def zammad_get_pgp_key(object_id: int) -> str:
+    """Read safe metadata for one PGP key without returning key material or passphrases."""
+    key = await _get(f"/integration/pgp/key/{_validate_id(object_id)}")
+    return _json(project_pgp_key(key))
+
+
+@mcp.tool()
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
     return _json({name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
@@ -877,6 +938,9 @@ async def zammad_list_admin_resources() -> str:
         "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
         "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
         "proxy_test": {"operations": ["test"], "risk": "Sends an outbound HTTP request from Zammad through the selected proxy; does not save settings."},
+        "pgp_keys": {"operations": ["read", "create", "delete"], "risk": "Manages PGP private keys; key material and passphrases are never returned."},
+        "smime_certificates": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME certificates; deletion also removes an associated private key."},
+        "smime_private_keys": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME private keys; key material and passphrases are never returned."},
     })
 
 
@@ -892,6 +956,12 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if area is not None and (not isinstance(area, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]{1,120}", area)):
         raise ValueError("area must be a valid Zammad settings area name")
     params = {"page": page, "per_page": per_page}
+    if resource == "pgp_keys":
+        return _json(project_pgp_collection(await _get("/integration/pgp/key")))
+    if resource == "smime_certificates":
+        return _json(project_smime_collection(await _get("/integration/smime/certificate")))
+    if resource == "smime_private_keys":
+        return _json(project_smime_private_key_collection(await _get("/integration/smime/certificate")))
     if resource in {_SPECIAL_CHANNEL, "email_channels", _MESSAGING_CHANNELS_RESOURCE}:
         channel_data = await _get(_SPECIAL_READ_PATH, params)
         if resource == _MESSAGING_CHANNELS_RESOURCE:
@@ -1701,6 +1771,100 @@ async def zammad_prepare_ssl_certificate_change(
         "before": preview_before, "after": preview_after,
         "approval_required": True,
         "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_crypto_material_change(
+    resource: Literal["pgp_keys", "smime_certificates", "smime_private_keys"],
+    operation: Literal["create", "delete"],
+    data: dict[str, Any] | None = None,
+    object_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview PGP or S/MIME material changes; secret inputs must use process environment references."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Cryptographic material changes require acknowledge_high_impact=true")
+    if operation == "create":
+        if object_id is not None or not isinstance(data, dict):
+            raise ValueError("create requires data and does not accept object_id")
+        if resource == "pgp_keys":
+            submitted, _ = validate_pgp_create(data)
+            submitted_key = submitted.pop("private_key")
+            if isinstance(submitted_key, Mapping):
+                materialized, _ = _materialize_secret_values({**submitted, "private_key": submitted_key})
+                data = materialized
+            else:
+                materialized, _ = _materialize_secret_values(submitted)
+                data = {**materialized, "private_key": submitted_key}
+            validate_pgp_material(data["private_key"])
+            key_type = "private" if "-----BEGIN PGP PRIVATE KEY BLOCK-----" in data["private_key"] else "public"
+            if "passphrase" in materialized and not isinstance(materialized["passphrase"], str):
+                raise ValueError("passphrase must be text")
+            preview_after = {
+                "domain_alias": data.get("domain_alias"), "key_type": key_type,
+                "passphrase_provided": bool(data.get("passphrase")), "key_material_returned": False,
+            }
+        elif resource == "smime_certificates":
+            if set(data) != {"certificate"}:
+                raise ValueError("S/MIME certificate creation accepts only certificate PEM text")
+            data, preview_after = validate_smime_certificate(data.get("certificate"))
+        else:
+            submitted, _ = validate_smime_private_key(data)
+            materialized, _ = _materialize_secret_values(submitted)
+            validate_materialized_private_key(materialized, "private_key")
+            if "secret" in materialized and not isinstance(materialized["secret"], str):
+                raise ValueError("secret must be text")
+            data = materialized
+            preview_after = {"private_key_provided": True, "passphrase_provided": bool(data.get("secret")), "key_material_returned": False}
+        object_id = None
+        raw_before = await _crypto_material_snapshot(resource)
+        if resource == "pgp_keys":
+            before = project_pgp_collection(raw_before)
+        else:
+            before = project_smime_collection(raw_before)
+    else:
+        if data is not None or object_id is None:
+            raise ValueError("delete requires object_id and does not accept data")
+        object_id = _validate_id(object_id)
+        raw_before = await _crypto_material_snapshot(resource, object_id)
+        if resource == "pgp_keys":
+            before = project_pgp_key(raw_before)
+            if not before.get("private_key_configured"):
+                raise ValueError("object_id must identify an existing PGP key")
+        else:
+            before = project_smime_certificate(raw_before)
+            has_material = before.get("id") == object_id and (
+                resource == "smime_certificates" or before.get("private_key_configured")
+            )
+            if not has_material:
+                raise ValueError("object_id must identify an existing S/MIME certificate or private key")
+        data = {}
+        preview_after = None
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__crypto_material__", "crypto_resource": resource,
+        "operation": operation, "object_id": object_id, "data": data,
+        "fingerprint": _crypto_digest(raw_before), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": resource, "operation": operation,
+        "object_id": object_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes cryptographic material used for message signing, encryption, or decryption. Removing a certificate also removes its paired private key.",
+        "before": before, "after": preview_after, "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval; key and passphrase values are withheld from this preview.",
     })
 
 
@@ -2954,6 +3118,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__proxy_test__":
             current = plan["data"]
             current_fingerprint = _proxy_test_fingerprint(current)
+        elif plan["resource"] == "__crypto_material__":
+            current = await _crypto_material_snapshot(plan["crypto_resource"], plan["object_id"])
+            current_fingerprint = _crypto_digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -3308,6 +3475,35 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "diagnostics_returned": False,
                 "settings_saved": False,
             }
+        elif resource == "__crypto_material__":
+            crypto_resource = plan["crypto_resource"]
+            object_id = plan["object_id"]
+            if operation == "create" and crypto_resource == "pgp_keys":
+                created = await _request("POST", "/integration/pgp/key", data)
+                result = {"created": True, "key": project_pgp_key(created), "key_material_returned": False}
+            elif operation == "create" and crypto_resource == "smime_certificates":
+                created = await _request("POST", "/integration/smime/certificate", data)
+                result = {"created": True, "certificates": project_smime_collection(created if isinstance(created, list) else [created])}
+            elif operation == "create" and crypto_resource == "smime_private_keys":
+                created = await _request("POST", "/integration/smime/private_key", data)
+                metadata = project_smime_certificate(created)
+                result = {
+                    "private_key_configured": True,
+                    "certificate_id": metadata.get("id"),
+                    "key_material_returned": False,
+                    "response_metadata": metadata,
+                }
+            elif operation == "delete" and crypto_resource == "pgp_keys":
+                await _request("DELETE", f"/integration/pgp/key/{_validate_id(object_id)}")
+                result = {"deleted": True, "key_id": object_id, "key_material_returned": False}
+            elif operation == "delete" and crypto_resource == "smime_certificates":
+                await _request("DELETE", "/integration/smime/certificate", {"id": _validate_id(object_id)})
+                result = {"deleted": True, "certificate_id": object_id, "paired_private_key_removed": True}
+            elif operation == "delete" and crypto_resource == "smime_private_keys":
+                await _request("DELETE", "/integration/smime/private_key", {"id": _validate_id(object_id)})
+                result = {"private_key_removed": True, "certificate_id": object_id, "certificate_preserved": True}
+            else:
+                raise ValueError("Unsupported cryptographic material operation")
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -3333,6 +3529,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__user_two_factor_action__": "user_two_factor_authentication",
         "__user_unlock__": "user_unlock",
         "__proxy_test__": "proxy_test",
+        "__crypto_material__": plan.get("crypto_resource", "cryptographic_material"),
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -3352,6 +3549,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The user was unlocked. Inspect the failed-login counter before retrying if the outcome is uncertain."
     elif resource == "__proxy_test__":
         response_note = "The one-time outbound connectivity check completed. No proxy settings were saved."
+    elif resource == "__crypto_material__":
+        response_note = "Plan consumed. Cryptographic changes affect message signing, encryption, or decryption. Key material and passphrases are never returned; inspect the safe metadata before retrying if the result is uncertain."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

@@ -132,6 +132,7 @@ Supported workflows include:
 - Knowledge Base role access changes use a complete per-role preview, validate against Zammad's eligible roles, and are rejected if the permissions changed after preview
 - Translation administration can list customized entries, search suggestions, stage upserts, reset system translations, and delete custom translations
 - SSL certificate management can list metadata and stage single-PEM imports or certificate removal; previews never return certificate bodies
+- PGP keys and S/MIME certificates/private keys can be listed and changed through dedicated staged workflows. Private keys and passphrases require process environment references; public PGP keys may be provided directly. Reads, previews, and apply results expose only safe metadata and configured booleans
 - Package management can list installed packages and stage install/removal plans; install payloads are size-limited and summarized without returning package file contents
 - The system report is available as a redacted summary that excludes setting values, environment data, hardware identifiers, paths, and activity timestamps
 - Object Manager attribute removals and the global queued-migration action use separate previews; removal migrations permanently drop the affected database column and its values
@@ -178,6 +179,13 @@ Translations:
 SSL certificates:
 
 - `zammad_prepare_ssl_certificate_change`
+
+PGP and S/MIME cryptographic material:
+
+- `zammad_get_pgp_status`
+- `zammad_get_pgp_key`
+- `zammad_list_admin_resource` with `pgp_keys`, `smime_certificates`, or `smime_private_keys`
+- `zammad_prepare_crypto_material_change`
 
 Monitoring:
 
