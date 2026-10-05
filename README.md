@@ -13,20 +13,23 @@ A local Python MCP server for reading and configuring allowlisted Zammad adminis
 - Apply a prepared plan only after an explicit user approval in the conversation; apply re-reads the object and rejects a changed snapshot.
 - Restrict resource names, paths, object IDs, and HTTP methods to server-side definitions. There is no arbitrary URL/method/body tool.
 - Redact secret-like fields in tool results. Submitted credentials are held only in process memory while a plan is pending and are redacted from the preview.
+- Read and stage updates for individual Zammad settings through the fixed `/settings/{id}` API route. Settings writes accept only the setting name and its `state_current.value`; each requires high-impact acknowledgement.
+- Revoke an API token through the staged delete flow. Token creation is not exposed because Zammad returns a generated token only once and this MCP has no secure one-time secret delivery surface.
 
 Writes require a Zammad API token with the corresponding permissions. The token permissions determine actual access; the MCP does not grant additional Zammad rights. The `Codex-Zammad-Anpassung` role's intended equality with Admin is preserved as an existing Zammad decision.
 
 ## Important limitations
 
-- API coverage is not yet proven complete for every Zammad admin UI setting. The allowlist is an initial API-backed surface; unsupported controls are not routed through arbitrary endpoints or Rails console commands.
+- API coverage is not complete for every Zammad admin UI setting. LDAP/SSO and other authentication settings can be read and staged through `/settings`, but apply behavior for those fields has not been verified. Inbound mailbox configuration remains unavailable because a documented, version-pinned REST contract was not found. External IdP/proxy configuration is outside Zammad's API.
+- The Settings REST route used by the Zammad Admin UI returned 285 settings on the installed 7.1.2 server; reading an LDAP setting and preparing a staged setting preview worked. A real settings write was not performed, so update payload application still needs a controlled verification.
 - Zammad's published `latest` and `pre-release` documentation is not a version-pinned guarantee for the installed 7.1.2 instance. Confirm each endpoint and payload against that instance before relying on it.
 - The preview/apply check is a read-before-write check. Unless an endpoint supports an atomic conditional update, another client can still change the record in the small interval between the final read and write.
 - The server lock coordinates writes only inside this process. It does not serialize other MCP processes or Zammad administrators.
 - A plan ID is not human consent. The assistant must show the preview and obtain explicit approval before calling apply. A host with a mandatory per-write approval mechanism is preferable.
 - Creating or updating an object-manager attribute does not execute a database migration. Migration and restart operations are deliberately not included in generic writes.
 - `email_notification` is a separate high-impact operation: applying it calls Zammad's configure endpoint, which sends a real test email and saves the settings in the same request. It must be separately approved.
-- API token issuance/revocation, system-wide settings that are only documented through Rails console, authentication provider setup, and inbound mailbox configuration are not yet implemented. Do not claim full UI parity until each has a dedicated, reviewed workflow.
-- Deleting users is intentionally excluded from generic writes because it can affect related ticket data. Deactivate users instead unless a separately reviewed privacy workflow is implemented.
+- API token creation is not implemented; staged revocation is available. Authentication-provider settings can be read and staged through the generic fixed settings workflow, but apply behavior has not been separately validated. Inbound mailbox configuration is not implemented.
+- User and organization deletion use the generic staged workflow and are marked high impact. Review related records and the preview before approval.
 
 ## Setup
 

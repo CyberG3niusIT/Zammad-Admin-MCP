@@ -11,20 +11,27 @@ The original live tool registry was read-only: server version, groups, roles, ex
 | Admin area | Read | Write | Notes / required safeguards |
 |---|---|---|---|
 | Groups, roles, permissions, memberships | Read + staged CRUD | Staged CRUD | Preserve the confirmed Admin-equivalent `Codex-Zammad-Anpassung` role. Role changes can alter administrative access. |
-| Users / agents / organizations | Read + staged create/update | Staged create/update | User deletion is excluded from generic writes because it can affect ticket data. Token values are one-time outputs and are not implemented. |
+| Checklist templates, tag administration, audit log | Read + staged CRUD for templates/tags; read-only audit log | Staged CRUD for templates/tags | Deleting/renaming shared checklist and tag definitions can affect agent workflows and categorization. Audit log is read-only. Live route verification remains pending. |
+| Users / agents / organizations | Read + staged CRUD | Staged CRUD | Deletions are explicitly high impact because they can affect related records and access. |
 | Ticket states and priorities | Read + staged CRUD | Staged CRUD | Other ticket data is intentionally outside this admin resource registry. Check references before deleting values. |
 | Calendars and SLAs | Read + staged CRUD | Staged CRUD | Validate cross-resource dependencies and time-zone/business-hour payloads. |
 | Triggers, macros, overviews, text modules, templates, core workflows, report profiles | Read + staged CRUD | Staged CRUD | Trigger bodies can send mail or invoke external services in future events; every change requires explicit approval. `/schedulers` returned HTTP 404 on the installed 7.1.2 instance. |
 | Object manager | Read + staged create/update | Staged create/update | High risk: schema changes can affect data. Migration endpoint and restart are deliberately not exposed. |
-| Outbound sender addresses and notification SMTP | Read + staged CRUD / special configure | Staged writes | Notification configure sends a real test email while saving. Mailbox/inbound channel configuration is not implemented. |
+| Outbound sender addresses and notification SMTP | Read + staged CRUD / special configure | Staged writes | Notification configure sends a real test email while saving. Mailbox/inbound channel configuration is not implemented: the public API docs distinguish it from notification mail but do not document a stable endpoint contract. |
 | Webhooks | Read + staged CRUD | Staged CRUD | Secret fields are redacted; changes can enable future external calls. |
-| Authentication, SSO/LDAP, API tokens | Partial (user records and token metadata) | Missing for provider config/token issuance | High-impact lockout and credential scope risks. Token values are not returned by list operations; creation/revocation needs dedicated workflows. |
+| Authentication, SSO/LDAP, API tokens | Partial (user records and token metadata) | Staged update of a specific setting; token revocation staged | Zammad's Settings REST controller is used by the Admin UI, but has no current official API contract in the public docs; `/settings` must be verified live against 7.1.2 before relying on it. Updates require matching setting name and ID and replace only `state_current.value`. Token creation returns a generated one-time secret that cannot be retrieved later; no secure one-time delivery channel is implemented. |
 | Knowledge base | Read by KB ID, permissions, answer and category records | Staged update/CRUD | Uses dedicated nested routes and requires caller-supplied IDs. The current instance's KB 1 has no answer/category records. Public content writes require explicit confirmation. |
-| System settings and other UI-only admin controls | Missing | Missing | Some official settings use Rails console rather than a documented REST endpoint. No arbitrary console/API bridge is allowed. |
+| System settings and other UI-only admin controls | Partial read/write through fixed `/settings` resource | Staged update only | REST route used by Zammad's Admin UI, not a documented/version-pinned API contract; validate every target setting in 7.1.2. Updates are high impact and require explicit confirmation. No Rails-console or arbitrary command bridge is exposed. External SSO proxy/IdP configuration is outside Zammad's REST API. |
 
 ## Live 7.1.2 endpoint spot-check
 
 Version returned `7.1.2-bbc6460a.docker`. These GET checks streamed and discarded response bodies; only statuses were retained: version, ticket priorities, macros, overviews, templates, text modules, core workflows, report profiles, webhooks, email addresses, organizations, users, object manager attributes, user access token metadata, roles with expansion, and `/channels_email` returned HTTP 200. `/schedulers`, `/knowledge_bases`, `/knowledge_base_categories`, `/knowledge_base_answers`, and `/knowledge_bases/1/answers` collection returned HTTP 404. `/knowledge_bases/1` and `/knowledge_bases/1/permissions` returned HTTP 200. No API writes were made.
+
+## Remaining scope gaps
+
+The MCP does not yet provide a complete replacement for every Admin UI function. In particular, there is no documented, version-pinned REST contract for LDAP/SSO provider setup or inbound mailbox channels. These cannot be safely completed through guessed endpoints or a general Rails-console bridge. A fixed `/settings` resource has been added based on the Settings REST controller used by the Admin UI, but it is not considered verified until its read/preview/apply behavior is checked against the installed 7.1.2 instance. The generic CRUD registry covers the API-backed resources listed above; each route still needs live verification before it can be described as fully supported.
+
+Access-token creation remains unavailable because Zammad returns the newly generated secret once and cannot retrieve it again. The current secret-handling policy does not provide a secure one-time delivery surface; token metadata can be read and token revocation is staged.
 
 ## Write contract
 

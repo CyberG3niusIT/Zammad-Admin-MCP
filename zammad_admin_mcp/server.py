@@ -47,17 +47,23 @@ _RESOURCES: dict[str, Resource] = {
     "report_profiles": Resource("/report_profiles"),
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
-    "organizations": Resource("/organizations", operations=frozenset({"create", "update"})),
-    "users": Resource("/users", operations=frozenset({"create", "update"}), risk="Changes user identity, roles, and access.", high_impact=True),
+    "checklist_templates": Resource("/checklist_templates", risk="Changes reusable checklists available to agents.", high_impact=True),
+    "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
+    "audit_logs": Resource("/audit_logs", operations=frozenset(), risk="Read-only security and configuration change history."),
+    "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
+    "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
     "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update"}), risk="Schema changes can affect stored data and require a separate migration/restart workflow.", high_impact=True),
-    "user_access_tokens": Resource("/user_access_token", operations=frozenset(), risk="Read-only token metadata; creation returns a one-time secret and revocation can lock out the MCP account."),
+    "user_access_tokens": Resource("/user_access_token", operations=frozenset({"delete"}), risk="Revokes an API token immediately and may lock out integrations.", high_impact=True),
+    # Zammad's admin UI uses the Settings REST controller for configuration forms.
+    # Restrict writes to a setting's current value; do not expose an arbitrary route.
+    "settings": Resource("/settings", operations=frozenset({"update"}), risk="May change authentication, integrations, security, or service behavior.", high_impact=True),
 }
 
 # This endpoint is intentionally special: its POST sends a real test email and saves settings.
 _SPECIAL_CHANNEL = "email_notification"
 _SPECIAL_PATH = "/channels_email_notification"
 _SPECIAL_READ_PATH = "/channels_email"
-_SECRET_WORDS = {"password", "secret", "token", "credential", "authorization"}
+_SECRET_WORDS = {"password", "pass", "pw", "secret", "token", "credential", "authorization"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
 _PLANS: dict[str, dict[str, Any]] = {}
@@ -104,7 +110,12 @@ def _is_secret_field(key: str, value: Any) -> bool:
     if normalized in {"user_access_tokens", "access_tokens", "tokens"} and isinstance(value, (Mapping, list)):
         return False
     words = set(re.findall(r"[a-z0-9]+", normalized))
-    return bool(words & _SECRET_WORDS) or "private_key" in normalized or ("api" in words and "key" in words)
+    return (
+        bool(words & _SECRET_WORDS)
+        or normalized.endswith(("_pw", "_pass"))
+        or "private_key" in normalized
+        or ("api" in words and "key" in words)
+    )
 
 
 def _scrub(value: Any) -> Any:
@@ -423,6 +434,12 @@ async def zammad_prepare_admin_change(
             raise ValueError("configure is only valid for email_notification")
         if operation in {"create", "update"} and (not isinstance(data, dict) or not data):
             raise ValueError("create and update require a non-empty JSON object in data")
+        if resource == "settings" and operation == "update":
+            if set(data) != {"name", "state_current"} or not isinstance(data.get("name"), str):
+                raise ValueError("settings updates require exactly name and state_current fields")
+            state_current = data.get("state_current")
+            if not isinstance(state_current, dict) or set(state_current) != {"value"}:
+                raise ValueError("settings state_current must contain exactly one value field")
         if operation == "delete" and data:
             raise ValueError("delete does not accept data")
         if operation == "create" and object_id is not None:
@@ -435,6 +452,8 @@ async def zammad_prepare_admin_change(
     before = await _snapshot(resource, operation, object_id)
     if operation in {"update", "delete"} and not isinstance(before, Mapping):
         raise RuntimeError("The Zammad API did not return an object snapshot")
+    if resource == "settings" and data.get("name") != before.get("name"):
+        raise ValueError("settings name must match the selected setting ID")
     if operation == "create":
         after = data
     elif operation in {"update", "configure"}:
