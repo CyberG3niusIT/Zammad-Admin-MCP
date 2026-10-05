@@ -57,7 +57,7 @@ _RESOURCES: dict[str, Resource] = {
 _SPECIAL_CHANNEL = "email_notification"
 _SPECIAL_PATH = "/channels_email_notification"
 _SPECIAL_READ_PATH = "/channels_email"
-_SECRET_KEY = re.compile(r"(password|secret|token|credential|private.?key|client.?secret|authorization)", re.I)
+_SECRET_WORDS = {"password", "secret", "token", "credential", "authorization"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
 _PLANS: dict[str, dict[str, Any]] = {}
@@ -99,9 +99,17 @@ def _validate_id(object_id: int | None) -> int:
     return object_id
 
 
+def _is_secret_field(key: str, value: Any) -> bool:
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
+    if normalized in {"user_access_tokens", "access_tokens", "tokens"} and isinstance(value, (Mapping, list)):
+        return False
+    words = set(re.findall(r"[a-z0-9]+", normalized))
+    return bool(words & _SECRET_WORDS) or "private_key" in normalized or ("api" in words and "key" in words)
+
+
 def _scrub(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {str(k): ("[REDACTED]" if _SECRET_KEY.search(str(k)) and v not in (None, "", False) else _scrub(v)) for k, v in value.items()}
+        return {str(k): ("[REDACTED]" if _is_secret_field(str(k), v) and v not in (None, "", False) else _scrub(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [_scrub(item) for item in value]
     return value
