@@ -1,3 +1,5 @@
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/221825e8-708e-4f35-992a-f9e6add9d24d" />
+
 # Zammad-Admin-MCP
 
 A local Python MCP server for reading and configuring allowlisted Zammad administration resources. Zammad configuration changes are staged through a preview tool and a separate apply tool. This MCP does not perform any configuration change merely by being loaded or by listing a resource.
