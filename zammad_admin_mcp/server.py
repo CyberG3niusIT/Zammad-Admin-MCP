@@ -46,6 +46,7 @@ _RESOURCES: dict[str, Resource] = {
     "templates": Resource("/templates"),
     "text_modules": Resource("/text_modules"),
     "core_workflows": Resource("/core_workflows", risk="Changes fields and values presented in ticket forms.", high_impact=True),
+    "signatures": Resource("/signatures", risk="Changes message signatures available to agents."),
     "report_profiles": Resource("/report_profiles"),
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
@@ -378,7 +379,7 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         raise ValueError("per_page must be between 1 and 100")
     params = {"page": page, "per_page": per_page}
     if resource in {_SPECIAL_CHANNEL, "email_channels"}:
-        return _json(await _get(_SPECIAL_READ_PATH, params))
+        return _json(_project_email_channels(await _get(_SPECIAL_READ_PATH, params)))
     spec = _resource(resource)
     return _json(await _get(spec.path, params))
 
@@ -563,16 +564,60 @@ def _merge_preview(before: Any, patch: Mapping[str, Any]) -> Any:
     return merged
 
 
+def _project_email_channels(value: Any) -> dict[str, Any]:
+    """Expose email configuration while omitting linked people and diagnostic logs."""
+    if not isinstance(value, Mapping):
+        return {}
+    assets = value.get("assets", {})
+    channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
+    address_assets = assets.get("EmailAddress", {}) if isinstance(assets, Mapping) else {}
+    channel_fields = {
+        "id", "name", "area", "active", "group_id", "options", "preferences",
+        "status_in", "status_out", "created_at", "updated_at",
+    }
+    address_fields = {
+        "id", "email", "realname", "name", "channel_id", "active", "group_id",
+        "preferences", "created_at", "updated_at",
+    }
+
+    def select(source: Any, fields: set[str]) -> dict[str, Any]:
+        if not isinstance(source, Mapping):
+            return {}
+        return {
+            str(key): {field: item[field] for field in fields if field in item}
+            for key, item in source.items() if isinstance(item, Mapping)
+        }
+
+    fixed = value.get("accounts_fixed", [])
+    return {
+        "account_channel_ids": value.get("account_channel_ids", []),
+        "notification_channel_ids": value.get("notification_channel_ids", []),
+        "email_address_ids": value.get("email_address_ids", []),
+        "not_used_email_address_ids": value.get("not_used_email_address_ids", []),
+        "accounts_fixed": [
+            {field: item[field] for field in address_fields if field in item}
+            for item in fixed if isinstance(item, Mapping)
+        ] if isinstance(fixed, list) else [],
+        "assets": {
+            "Channel": select(channel_assets, channel_fields),
+            "EmailAddress": select(address_assets, address_fields),
+        },
+        "channel_driver": value.get("channel_driver", {}),
+        "config": value.get("config", {}),
+    }
+
+
 def _email_account_preview(before: Any, data: Mapping[str, Any]) -> dict[str, Any]:
     channel_id = data.get("channel_id")
-    assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+    projected = _project_email_channels(before)
+    assets = projected.get("assets", {})
     channel_assets = assets.get("Channel", {}) if isinstance(assets, Mapping) else {}
     current = None
     if channel_id is not None and isinstance(channel_assets, Mapping):
         current = channel_assets.get(str(channel_id), channel_assets.get(channel_id))
     summary = {
-        "account_channel_ids": before.get("account_channel_ids", []) if isinstance(before, Mapping) else [],
-        "notification_channel_ids": before.get("notification_channel_ids", []) if isinstance(before, Mapping) else [],
+        "account_channel_ids": projected.get("account_channel_ids", []),
+        "notification_channel_ids": projected.get("notification_channel_ids", []),
         "current_channel": current,
     }
     return {"before": summary, "after": dict(data)}
@@ -747,11 +792,28 @@ async def zammad_prepare_admin_change(
             after = {"id": object_id, "group_id": preview_data["group_id"]}
         else:
             after = None
+    elif resource == _SPECIAL_CHANNEL:
+        before_preview = _project_email_channels(before)
+        after = {
+            "requested_configuration": preview_data,
+            "side_effects_on_apply": ["send a real SMTP test email", "save the notification channel on success"],
+        }
+    elif resource == "user_access_tokens" and operation == "create":
+        available_permissions = [
+            item["name"] for item in before.get("permissions", [])
+            if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
+        ] if isinstance(before, Mapping) else []
+        before_preview = {
+            "existing_token_count": len(before.get("tokens", [])) if isinstance(before, Mapping) and isinstance(before.get("tokens"), list) else None,
+            "active_permission_count": len(available_permissions),
+            "requested_permissions_are_active": True,
+        }
+        after = preview_data
     elif operation in {"update", "configure"}:
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
         before_preview = before
 
     plan_id = secrets.token_urlsafe(24)
