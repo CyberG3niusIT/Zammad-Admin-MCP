@@ -1,4 +1,4 @@
-# Zammad Admin MCP
+# Zammad-Admin-MCP
 
 A local Python MCP server for reading and configuring allowlisted Zammad administration resources. Zammad configuration changes are staged through a preview tool and a separate apply tool. This MCP does not perform any configuration change merely by being loaded or by listing a resource.
 
