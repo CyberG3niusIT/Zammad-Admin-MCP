@@ -165,6 +165,7 @@ Core:
 
 Knowledge base:
 
+- `zammad_list_knowledge_bases`
 - `zammad_get_knowledge_base`
 - `zammad_list_knowledge_base_categories`
 - `zammad_get_knowledge_base_permissions`
@@ -174,6 +175,7 @@ Knowledge base:
 - `zammad_prepare_knowledge_base_category_permissions_change`
 
 Category record reads include the full category assets so translated names and text are available. `translation_id` applies only to answer records.
+Knowledge Base discovery uses Zammad's fixed `POST /knowledge_bases/init` read route. It lists the records available to the authenticated Zammad user, with translated titles and relationship IDs; answer bodies are not requested or returned.
 
 Translations:
 

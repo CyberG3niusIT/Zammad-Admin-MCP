@@ -81,6 +81,7 @@ from zammad_admin_mcp.admin_schemas.time_accounting import project_report as pro
 from zammad_admin_mcp.admin_schemas.time_accounting import project_types as project_time_accounting_types
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
+from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -472,6 +473,7 @@ async def _request(
         "/applications/token",
         "/settings/ticket_agent_default_notifications/apply_to_all",
         "/calendars/timezones",
+        "/knowledge_bases/init",
         "/proxy",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
@@ -545,6 +547,8 @@ async def _request(
         raise ValueError("Applying ticket agent notification defaults supports POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
+    if path == "/knowledge_bases/init" and method != "POST":
+        raise ValueError("Knowledge Base inventory uses its read-only initialization route")
     if path == "/proxy" and method != "POST":
         raise ValueError("Proxy connectivity checks support POST only")
     if user_unlock_path and method != "PUT":
@@ -927,6 +931,7 @@ async def zammad_list_admin_resources() -> str:
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
+        "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
         "knowledge_base_category_permissions": {"operations": ["read", "update"], "risk": "Changes inherited role access for a category and can affect descendant categories; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
@@ -1297,6 +1302,13 @@ async def zammad_prepare_ldap_connection_action(
         "approval_required": True,
         "note": "No LDAP request was sent. Apply only after explicit user approval.",
     })
+
+
+@mcp.tool()
+async def zammad_list_knowledge_bases() -> str:
+    """Discover Knowledge Bases and translated category/answer titles without returning answer bodies."""
+    assets = await _request("POST", "/knowledge_bases/init", {})
+    return _json(project_knowledge_base_inventory(assets))
 
 
 @mcp.tool()
