@@ -2079,51 +2079,46 @@ async def _prepare_knowledge_base_permissions_change(
     dependencies: list[dict[str, Any]] = []
     affected_descendants: list[int] = []
     if category is not None:
-        category_rows = await _get(f"/knowledge_bases/{kb_id}/categories")
-        if not isinstance(category_rows, list) or any(not isinstance(item, Mapping) for item in category_rows):
-            raise RuntimeError("Zammad did not return the Knowledge Base category list needed for a safe preview")
-        categories: dict[int, Mapping[str, Any]] = {}
-        children: dict[int, list[int]] = {}
-        for item in category_rows:
-            item_id = item.get("id")
-            parent_id = item.get("parent_id")
-            item_kb_id = item.get("knowledge_base_id", kb_id)
-            if (
-                isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0
-                or (parent_id is not None and (isinstance(parent_id, bool) or not isinstance(parent_id, int) or parent_id <= 0))
-                or isinstance(item_kb_id, bool) or not isinstance(item_kb_id, int) or item_kb_id != kb_id
-            ):
-                raise RuntimeError("Zammad returned an invalid Knowledge Base category list")
-            if item_id in categories:
-                raise RuntimeError("Zammad returned duplicate Knowledge Base categories")
-            categories[item_id] = item
-            if parent_id is not None:
-                children.setdefault(parent_id, []).append(item_id)
-        if category not in categories:
-            raise RuntimeError("The selected category is missing from the Knowledge Base category list")
-
-        pending = list(children.get(category, []))
+        target_children = category_snapshot.get("child_ids")
+        if not isinstance(target_children, list):
+            raise RuntimeError("Zammad did not return the selected category's child IDs")
+        dependencies.append({"path": category_path, "fingerprint": _digest(category_snapshot)})
+        pending = [(child_id, category) for child_id in target_children]
         seen = {category}
         while pending:
-            descendant_id = pending.pop()
+            descendant_id, expected_parent_id = pending.pop()
+            try:
+                descendant_id = _validate_id(descendant_id)
+            except ValueError as exc:
+                raise RuntimeError("Zammad returned an invalid child category ID") from exc
             if descendant_id in seen:
                 raise RuntimeError("Zammad returned a cyclic Knowledge Base category tree")
             seen.add(descendant_id)
             affected_descendants.append(descendant_id)
-            pending.extend(children.get(descendant_id, []))
-
-        category_collection_path = f"/knowledge_bases/{kb_id}/categories"
-        dependencies.append({"path": category_collection_path, "fingerprint": _digest(category_rows)})
-        dependencies.append({"path": category_path, "fingerprint": _digest(category_snapshot)})
-        for descendant_id in affected_descendants:
             descendant_path = f"/knowledge_bases/{kb_id}/categories/{descendant_id}"
             descendant_snapshot = await _get(descendant_path)
+            if not isinstance(descendant_snapshot, Mapping):
+                raise RuntimeError("Zammad did not return a descendant category snapshot")
+            try:
+                descendant_snapshot_id = _validate_id(descendant_snapshot.get("id"))
+                descendant_kb_id = _validate_id(descendant_snapshot.get("knowledge_base_id"))
+                descendant_parent_id = _validate_id(descendant_snapshot.get("parent_id"))
+            except ValueError as exc:
+                raise RuntimeError("Zammad returned an invalid descendant category relationship") from exc
+            if (
+                descendant_snapshot_id != descendant_id or descendant_kb_id != kb_id
+                or descendant_parent_id != expected_parent_id
+            ):
+                raise RuntimeError("Zammad returned a descendant outside the selected category tree")
+            child_ids = descendant_snapshot.get("child_ids")
+            if not isinstance(child_ids, list):
+                raise RuntimeError("Zammad did not return descendant category child IDs")
+            pending.extend((child_id, descendant_id) for child_id in child_ids)
+
             descendant_permissions_path = f"{descendant_path}/permissions"
             descendant_permissions = await _get(descendant_permissions_path)
-            if not isinstance(descendant_snapshot, Mapping) or not isinstance(descendant_permissions, Mapping):
-                raise RuntimeError("Zammad did not return a descendant category snapshot")
-            if descendant_snapshot.get("id") != descendant_id or descendant_snapshot.get("knowledge_base_id") != kb_id:
-                raise RuntimeError("Zammad returned a descendant outside the selected Knowledge Base")
+            if not isinstance(descendant_permissions, Mapping):
+                raise RuntimeError("Zammad did not return a descendant permission snapshot")
             dependencies.extend((
                 {"path": descendant_path, "fingerprint": _digest(descendant_snapshot)},
                 {"path": descendant_permissions_path, "fingerprint": _digest(descendant_permissions)},
