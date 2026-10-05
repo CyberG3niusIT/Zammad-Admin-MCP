@@ -952,7 +952,7 @@ async def zammad_get_pgp_key(object_id: int) -> str:
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
     return _json({name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
-        _SPECIAL_CHANNEL: {"operations": ["configure"], "risk": "POST sends a real test email and saves the active notification channel."},
+        _SPECIAL_CHANNEL: {"operations": ["read", "configure"], "risk": "Read returns sanitized notification channel metadata; configure sends a real test email and saves the active notification channel."},
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
