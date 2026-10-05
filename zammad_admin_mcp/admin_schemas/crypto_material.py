@@ -30,8 +30,8 @@ def project_pgp_key(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
     projected = {key: value[key] for key in _SAFE_PGP_FIELDS if key in value}
-    projected["private_key_configured"] = bool(value.get("key"))
-    projected["passphrase_configured"] = bool(value.get("passphrase") or value.get("secret"))
+    projected["private_key_configured"] = bool(value.get("key") or value.get("secret"))
+    projected["passphrase_configured"] = bool(value.get("passphrase"))
     return projected
 
 
