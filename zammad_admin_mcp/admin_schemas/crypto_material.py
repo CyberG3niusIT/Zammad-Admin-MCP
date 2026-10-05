@@ -14,7 +14,7 @@ _CERTIFICATE_BLOCK = re.compile(
     r"-----BEGIN CERTIFICATE-----\s*([A-Za-z0-9+/=\r\n]+?)\s*-----END CERTIFICATE-----"
 )
 _PRIVATE_KEY_BLOCK = re.compile(
-    r"-----BEGIN (?:PGP PRIVATE KEY BLOCK|RSA PRIVATE KEY|EC PRIVATE KEY|PRIVATE KEY)-----"
+    r"-----BEGIN (?:PGP PRIVATE KEY BLOCK|RSA PRIVATE KEY|DSA PRIVATE KEY|EC PRIVATE KEY|ENCRYPTED PRIVATE KEY|PRIVATE KEY)-----"
 )
 _SAFE_PGP_FIELDS = {
     "id", "fingerprint", "name", "email_addresses", "expires_at",
