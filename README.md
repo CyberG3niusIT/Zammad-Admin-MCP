@@ -1,0 +1,1 @@
+# Zammad-Admin-MCP
