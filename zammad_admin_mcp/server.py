@@ -530,6 +530,7 @@ async def _request(
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions|/categories/\d+/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
+    knowledge_base_lifecycle_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/(?:activate|deactivate)", path))
     translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
     translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
     translation_reset_path = bool(re.fullmatch(r"/translations/reset/\d+", path))
@@ -551,7 +552,7 @@ async def _request(
         microsoft_graph_verify_path, microsoft365_inbound_path, microsoft_graph_inbound_path,
         google_action_path, google_group_path, google_verify_path, google_inbound_path,
         settings_image_path, settings_reset_path, item_path, knowledge_base_path,
-        knowledge_base_settings_path, translation_search_path, translation_item_path,
+        knowledge_base_settings_path, knowledge_base_lifecycle_path, translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
@@ -590,6 +591,8 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
         raise ValueError("Knowledge Base inventory uses its read-only initialization route")
+    if knowledge_base_lifecycle_path and method != "PATCH":
+        raise ValueError("Knowledge Base lifecycle actions support PATCH only")
     if (path == "/http_logs" or http_log_facility_path) and method != "GET":
         raise ValueError("HTTP logs are available as read-only metadata")
     if path == "/proxy" and method != "POST":
@@ -998,6 +1001,7 @@ async def zammad_list_admin_resources() -> str:
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
+        "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
         "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
@@ -2807,6 +2811,50 @@ async def zammad_prepare_knowledge_base_settings_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_lifecycle_change(
+    knowledge_base_id: int,
+    action: Literal["activate", "deactivate"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare an explicitly approved Knowledge Base activation change."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base lifecycle changes require acknowledge_high_impact=true")
+    before = await _get(f"/knowledge_bases/{kb_id}")
+    if not isinstance(before, Mapping) or before.get("id") != kb_id or not isinstance(before.get("active"), bool):
+        raise RuntimeError("Zammad did not return a valid Knowledge Base lifecycle snapshot")
+    desired_active = action == "activate"
+    if before["active"] == desired_active:
+        raise ValueError(f"Knowledge Base is already {'active' if desired_active else 'inactive'}")
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_lifecycle__", "operation": action,
+        "object_id": kb_id, "data": {"active": desired_active},
+        "snapshot_path": f"/knowledge_bases/{kb_id}", "fingerprint": _digest(before),
+        "before": before, "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_lifecycle", "operation": action,
+        "object_id": kb_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes whether this Knowledge Base is publicly available.",
+        "before": {"id": kb_id, "active": before["active"]},
+        "after": {"id": kb_id, "active": desired_active},
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_record_change(
     knowledge_base_id: int,
     kind: Literal["answers", "categories"],
@@ -3927,6 +3975,12 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             }
         elif resource == "__knowledge_base_settings__":
             result = await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
+        elif resource == "__knowledge_base_lifecycle__":
+            await _request(
+                "PATCH",
+                f"/knowledge_bases/manage/{plan['object_id']}/{operation}",
+            )
+            result = {"knowledge_base_id": plan["object_id"], "active": data["active"]}
         elif resource in {"__knowledge_base_permissions__", "__knowledge_base_category_permissions__"}:
             result = await _request("PATCH", plan["write_path"], data)
             result = {"updated": isinstance(result, Mapping), "permission_details_returned": False}
@@ -4134,6 +4188,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__crypto_material__": plan.get("crypto_resource", "cryptographic_material"),
         "__user_import__": "user_imports",
         "__organization_import__": "organization_imports",
+        "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."

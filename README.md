@@ -172,11 +172,13 @@ Knowledge base:
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
+- `zammad_prepare_knowledge_base_lifecycle_change`
 - `zammad_prepare_knowledge_base_permissions_change`
 - `zammad_prepare_knowledge_base_category_permissions_change`
 
 Category record reads include the full category assets so translated names and text are available. `translation_id` applies only to answer records.
 Knowledge Base discovery uses Zammad's fixed `POST /knowledge_bases/init` read route. It lists the records available to the authenticated Zammad user, with translated titles and relationship IDs; answer bodies are not requested or returned.
+Activation and deactivation use staged plans against the installed `PATCH /knowledge_bases/manage/:id/activate` and `PATCH /knowledge_bases/manage/:id/deactivate` routes. Apply checks that the Knowledge Base record has not changed since preview.
 
 Translations:
 
