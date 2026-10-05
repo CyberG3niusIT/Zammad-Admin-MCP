@@ -130,6 +130,10 @@ Supported workflows include:
 - Translation administration can list customized entries, search suggestions, stage upserts, reset system translations, and delete custom translations
 - SSL certificate management can list metadata and stage single-PEM imports or certificate removal; previews never return certificate bodies
 - Package management can list installed packages and stage install/removal plans; install payloads are size-limited and summarized without returning package file contents
+- The system report is available as a redacted summary that excludes setting values, environment data, hardware identifiers, paths, and activity timestamps
+- Object Manager attribute removals and the global queued-migration action use separate previews; removal migrations permanently drop the affected database column and its values
+- AI agents and Writing Assistant tools can be read and changed through staged CRUD; previews include prompt/configuration changes and call out automated ticket effects or external provider usage charges
+- Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 
@@ -171,6 +175,14 @@ Monitoring:
 Packages:
 
 - `zammad_prepare_package_change`
+
+Object Manager migrations:
+
+- `zammad_prepare_object_manager_migrations`
+
+AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_agents`, or `ai_text_tools`, plus the staged `zammad_prepare_admin_change` operations for the writable resource names.
+
+Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
 
 Package operations can write executable code or reverse database migrations. Review the package source and the full preview before approval. The MCP does not run the listed dependency, migration, or service restart follow-up commands.
 

@@ -50,6 +50,12 @@ from zammad_admin_mcp.admin_schemas.packages import validate_install_payload as 
 from zammad_admin_mcp.admin_schemas.ssl_certificates import project_certificate as project_ssl_certificate
 from zammad_admin_mcp.admin_schemas.ssl_certificates import project_collection as project_ssl_certificate_collection
 from zammad_admin_mcp.admin_schemas.ssl_certificates import validate_payload as validate_ssl_certificate_payload
+from zammad_admin_mcp.admin_schemas.system_report import project_summary as project_system_report_summary
+from zammad_admin_mcp.admin_schemas.ai_admin import project_collection as project_ai_collection
+from zammad_admin_mcp.admin_schemas.ai_admin import project_object as project_ai_object
+from zammad_admin_mcp.admin_schemas.ai_admin import project_agent_types
+from zammad_admin_mcp.admin_schemas.ai_admin import validate_payload as validate_ai_payload
+from zammad_admin_mcp.admin_schemas.sessions import project_sessions
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -115,7 +121,7 @@ _RESOURCES: dict[str, Resource] = {
     "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
     "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
-    "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update"}), risk="Schema changes can affect stored data and require a separate migration/restart workflow.", high_impact=True),
+    "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update", "delete"}), risk="Attribute changes are queued until migration; executing a removal migration drops the database column and permanently deletes its values.", high_impact=True),
     "user_access_tokens": Resource(
         "/user_access_token",
         operations=frozenset({"create", "delete"}),
@@ -152,6 +158,24 @@ _RESOURCES: dict[str, Resource] = {
     "packages": Resource(
         "/packages", operations=frozenset({"install", "uninstall"}),
         risk="Package installation writes executable application files; removal reverses package migrations and removes files.", high_impact=True, item=False,
+    ),
+    "system_report": Resource(
+        "/system_report", operations=frozenset(),
+        risk="Returns a redacted system summary; environment values, settings, hardware identifiers, paths, and activity timestamps are excluded.", item=False,
+    ),
+    "ai_agents": Resource(
+        "/ai_agents", risk="AI agents can process ticket data and trigger automated ticket changes; provider calls can incur usage charges.", high_impact=True,
+    ),
+    "ai_agent_types": Resource(
+        "/ai_agents/types", operations=frozenset(),
+        risk="Returns available agent type schemas and their supported configuration fields.", item=False,
+    ),
+    "ai_text_tools": Resource(
+        "/ai_text_tools", risk="Writing Assistant tools send selected article text and configured context to the AI provider; use can incur provider charges.", high_impact=True,
+    ),
+    "sessions": Resource(
+        "/sessions", operations=frozenset({"delete"}),
+        risk="Ends the selected user's active Zammad session and requires them to sign in again.", item=False, high_impact=True,
     ),
 }
 
@@ -344,6 +368,8 @@ async def _request(
         "/integration/ldap/discover", "/integration/ldap/bind",
         "/integration/ldap/job_try", "/integration/ldap/job_start",
         "/monitoring/health_check", "/monitoring/token", "/monitoring/restart_failed_jobs",
+        "/system_report",
+        "/object_manager_attributes_execute_migrations",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -452,6 +478,14 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         return await zammad_get_monitoring_health()
     if resource == "packages":
         return _json(await _package_inventory_snapshot())
+    if resource == "system_report":
+        return _json(project_system_report_summary(await _get("/system_report")))
+    if resource in {"ai_agents", "ai_text_tools"}:
+        return _json(project_ai_collection(resource, await _get(_resource(resource).path, params)))
+    if resource == "ai_agent_types":
+        return _json(project_agent_types(await _get(_resource(resource).path)))
+    if resource == "sessions":
+        return _json(project_sessions(await _get("/sessions")))
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
@@ -473,6 +507,37 @@ async def _ssl_certificate_snapshot(certificate_id: int | None = None) -> Any:
 
 async def _package_inventory_snapshot() -> dict[str, Any]:
     return project_package_inventory(await _get("/packages"))
+
+
+async def _object_manager_migration_snapshot() -> list[Mapping[str, Any]]:
+    attributes = await _get("/object_manager_attributes")
+    if not isinstance(attributes, list) or any(not isinstance(item, Mapping) for item in attributes):
+        raise RuntimeError("Zammad did not return object manager attributes")
+    return [
+        item for item in attributes
+        if any(item.get(flag) is True for flag in ("to_create", "to_migrate", "to_delete", "to_config"))
+    ]
+
+
+async def _session_snapshot(session_id: int) -> tuple[Mapping[str, Any], dict[str, Any]] | None:
+    response = await _get("/sessions")
+    if not isinstance(response, Mapping) or not isinstance(response.get("sessions"), list):
+        raise RuntimeError("Zammad did not return its active sessions")
+    matches = [item for item in response["sessions"] if isinstance(item, Mapping) and item.get("id") == session_id]
+    if len(matches) > 1:
+        raise RuntimeError("Zammad returned duplicate session IDs")
+    if not matches:
+        return None
+    projected = project_sessions(response)
+    projected_matches = [item for item in projected if item.get("id") == session_id]
+    if len(projected_matches) != 1:
+        raise RuntimeError("Zammad session projection did not identify exactly one session")
+    return matches[0], projected_matches[0]
+
+
+def _object_manager_migration_preview(attributes: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    fields = ("id", "object", "name", "display", "data_type", "to_create", "to_migrate", "to_delete", "to_config")
+    return [{key: item[key] for key in fields if key in item} for item in attributes]
 
 
 def _register_legacy_list_tool(resource: str) -> None:
@@ -505,6 +570,8 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
     result = await _get(f"{spec.path}/{object_id}")
     if resource in {"settings", "product_logo"}:
         result = _project_settings(result)
+    if resource in {"ai_agents", "ai_text_tools"}:
+        result = project_ai_object(resource, result)
     return _json(result)
 
 
@@ -804,6 +871,82 @@ async def zammad_prepare_monitoring_action(
         "risk": risk, "before": before, "after": after,
         "approval_required": True,
         "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_object_manager_migrations(acknowledge_high_impact: bool = False) -> str:
+    """Preview all queued object manager migrations, including permanent data loss from field removal."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Object manager migrations require acknowledge_high_impact=true")
+    pending = await _object_manager_migration_snapshot()
+    if not pending:
+        raise ValueError("There are no queued object manager migrations")
+    preview = _object_manager_migration_preview(pending)
+    removed = [item for item in preview if item.get("to_delete") is True]
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__object_manager_migrations__", "operation": "execute_migrations",
+        "data": {}, "fingerprint": _digest(pending), "before": preview,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    risk = "Executes every currently queued object manager change against the database. Removal migrations permanently drop their custom attribute columns and all values stored in those columns." if removed else "Executes every currently queued object manager change against the database. Review each pending create, conversion, and configuration change before approval."
+    return _json({
+        "plan_id": plan_id, "resource": "object_manager_attributes", "operation": "execute_migrations",
+        "expires_in_seconds": _PLAN_TTL_SECONDS, "snapshot_fingerprint": plan["fingerprint"],
+        "risk": risk, "pending_changes": preview, "removed_attributes": removed,
+        "approval_required": True,
+        "note": "No migration was executed. The plan covers all pending object manager changes and is rejected if that queue changes before apply.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_session_action(
+    operation: Literal["delete"],
+    session_id: int,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview ending one active Zammad user session; the user will need to sign in again."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if operation != "delete":
+        raise ValueError("Sessions support only the delete operation")
+    _validate_id(session_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Ending an active session requires acknowledge_high_impact=true")
+    current_snapshot = await _session_snapshot(session_id)
+    if current_snapshot is None:
+        raise ValueError("session_id must identify an active Zammad session")
+    current, preview = current_snapshot
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__session_action__", "operation": operation,
+        "object_id": session_id, "data": {}, "fingerprint": _digest(current),
+        "before": preview, "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "sessions", "operation": operation,
+        "object_id": session_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "The selected user will be signed out and must authenticate again. The session cookie identifier is never returned.",
+        "before": plan["before"], "after": {"session_terminated": True},
+        "approval_required": True, "note": "No session was ended. Apply only after explicit user approval.",
     })
 
 
@@ -1534,6 +1677,8 @@ async def zammad_prepare_admin_change(
         raise ValueError("Use zammad_prepare_monitoring_action for monitoring changes")
     if resource == "packages":
         raise ValueError("Use zammad_prepare_package_change for package changes")
+    if resource == "sessions":
+        raise ValueError("Use zammad_prepare_session_action to end a session")
     if resource == _SPECIAL_CHANNEL:
         if operation != "configure":
             raise ValueError("email_notification supports only the configure operation")
@@ -1656,6 +1801,8 @@ async def zammad_prepare_admin_change(
     elif resource == "external_credentials" and operation in {"create", "update"}:
         validate_external_credentials_payload(operation, data)
         data, preview_data = materialize_external_credentials(data)
+    elif resource in {"ai_agents", "ai_text_tools"} and operation in {"create", "update"}:
+        data, preview_data = validate_ai_payload(resource, operation, data)
     elif resource == "product_logo" and operation == "update":
         data, _ = _materialize_secret_values(data)
         preview_data = validate_product_logo_payload(data)
@@ -1749,7 +1896,17 @@ async def zammad_prepare_admin_change(
                 associated_email.get("email") if associated_email is not None
                 else "channel-associated address (selected by Zammad)"
             )
-    if resource in _MESSAGE_CHANNEL_RESOURCES:
+    if resource in {"ai_agents", "ai_text_tools"}:
+        if operation == "create":
+            before_preview = project_ai_collection(resource, before)
+            after = preview_data
+        elif operation == "update":
+            before_preview = project_ai_object(resource, before)
+            after = _merge_preview(before_preview, preview_data or {})
+        else:
+            before_preview = project_ai_object(resource, before)
+            after = None
+    elif resource in _MESSAGE_CHANNEL_RESOURCES:
         before_preview = _project_messaging_channels(before)
         if operation in {"create", "update"}:
             after = preview_data
@@ -2072,6 +2229,12 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__package_change__":
             current = await _package_inventory_snapshot()
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__object_manager_migrations__":
+            current = await _object_manager_migration_snapshot()
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__session_action__":
+            current = await _session_snapshot(plan["object_id"])
+            current_fingerprint = _digest(current[0]) if current is not None else None
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -2314,6 +2477,16 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 }
             else:
                 raise ValueError("Unsupported package operation")
+        elif resource == "__object_manager_migrations__":
+            await _request("POST", "/object_manager_attributes_execute_migrations", {})
+            result = {
+                "migrations_executed": True,
+                "attribute_count": len(plan["before"]),
+                "removed_attribute_count": sum(1 for item in plan["before"] if item.get("to_delete") is True),
+            }
+        elif resource == "__session_action__":
+            await _request("DELETE", f"/sessions/{_validate_id(plan['object_id'])}")
+            result = {"session_terminated": True, "session_id": plan["object_id"]}
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -2331,6 +2504,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
     response_resource = {
         "__ldap_connection_action__": "ldap_connection_tests",
         "__ldap_import_action__": "ldap_import_actions",
+        "__object_manager_migrations__": "object_manager_attributes",
+        "__session_action__": "sessions",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
