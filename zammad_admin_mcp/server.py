@@ -85,6 +85,13 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_invento
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import preview_after as preview_knowledge_base_menu_after
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import project_snapshot as project_knowledge_base_menu_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import validate_update as validate_knowledge_base_menu_update
+from zammad_admin_mcp.admin_schemas.knowledge_base_ordering import preview_after as preview_knowledge_base_order_after
+from zammad_admin_mcp.admin_schemas.knowledge_base_ordering import project_siblings as project_knowledge_base_siblings
+from zammad_admin_mcp.admin_schemas.knowledge_base_ordering import validate_order as validate_knowledge_base_order
+from zammad_admin_mcp.admin_schemas.knowledge_base_publication import current_state as knowledge_base_publication_state
+from zammad_admin_mcp.admin_schemas.knowledge_base_publication import project_answer_snapshot as project_knowledge_base_publication_snapshot
+from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_schedule_updates as validate_knowledge_base_schedule_updates
+from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_transition as validate_knowledge_base_publication_transition
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
@@ -536,6 +543,14 @@ async def _request(
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
     knowledge_base_lifecycle_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/(?:activate|deactivate)", path))
     knowledge_base_menu_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/update_menu_items", path))
+    knowledge_base_order_path = bool(re.fullmatch(
+        r"/knowledge_bases/\d+/categories/(?:reorder_root_categories|\d+/(?:reorder_categories|reorder_answers))",
+        path,
+    ))
+    knowledge_base_publication_path = bool(re.fullmatch(
+        r"/knowledge_bases/\d+/answers/\d+/(?:internal|publish|archive|unarchive|has_publishing_update)",
+        path,
+    ))
     translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
     translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
     translation_reset_path = bool(re.fullmatch(r"/translations/reset/\d+", path))
@@ -558,6 +573,8 @@ async def _request(
         google_action_path, google_group_path, google_verify_path, google_inbound_path,
         settings_image_path, settings_reset_path, item_path, knowledge_base_path,
         knowledge_base_settings_path, knowledge_base_lifecycle_path, knowledge_base_menu_path,
+        knowledge_base_order_path,
+        knowledge_base_publication_path,
         translation_search_path, translation_item_path,
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
@@ -603,6 +620,10 @@ async def _request(
         raise ValueError("Knowledge Base lifecycle actions support PATCH only")
     if knowledge_base_menu_path and method != "PATCH":
         raise ValueError("Knowledge Base menu updates support PATCH only")
+    if knowledge_base_order_path and method != "PATCH":
+        raise ValueError("Knowledge Base ordering actions support PATCH only")
+    if knowledge_base_publication_path and method != "POST":
+        raise ValueError("Knowledge Base publication actions support POST only")
     if (path == "/http_logs" or http_log_facility_path) and method != "GET":
         raise ValueError("HTTP logs are available as read-only metadata")
     if path == "/proxy" and method != "POST":
@@ -1013,6 +1034,8 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
+        "knowledge_base_ordering": {"operations": ["read", "reorder"], "risk": "Changes public category or answer order; complete sibling preview and explicit confirmation required."},
+        "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
         "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
@@ -1622,6 +1645,63 @@ async def zammad_get_knowledge_base_menu_items(
     kb_id = _validate_id(knowledge_base_id)
     snapshot = await _knowledge_base_menu_snapshot(kb_id, location)
     return _json(snapshot)
+
+
+async def _knowledge_base_order_snapshot(
+    knowledge_base_id: int,
+    kind: Literal["root_categories", "categories", "answers"],
+    category_id: int | None,
+) -> dict[str, Any]:
+    assets = await _request("POST", "/knowledge_bases/init", {})
+    inventory = project_knowledge_base_inventory(assets)
+    return project_knowledge_base_siblings(inventory, knowledge_base_id, kind, category_id)
+
+
+def _knowledge_base_order_path(knowledge_base_id: int, kind: str, category_id: int | None) -> str:
+    if kind == "root_categories":
+        return f"/knowledge_bases/{knowledge_base_id}/categories/reorder_root_categories"
+    if category_id is None:
+        raise ValueError("category_id is required for child category and answer ordering")
+    action = "reorder_categories" if kind == "categories" else "reorder_answers"
+    return f"/knowledge_bases/{knowledge_base_id}/categories/{category_id}/{action}"
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_order(
+    knowledge_base_id: int,
+    kind: Literal["root_categories", "categories", "answers"],
+    category_id: int | None = None,
+) -> str:
+    """Read ordered sibling IDs for a Knowledge Base category or answer collection."""
+    kb_id = _validate_id(knowledge_base_id)
+    parent_id = _validate_id(category_id) if category_id is not None else None
+    snapshot = await _knowledge_base_order_snapshot(kb_id, kind, parent_id)
+    return _json(snapshot)
+
+
+async def _knowledge_base_publication_snapshot(knowledge_base_id: int, answer_id: int) -> dict[str, Any]:
+    answer_value = await _get(f"/knowledge_bases/{knowledge_base_id}/answers/{answer_id}")
+    assets = answer_value.get("assets") if isinstance(answer_value, Mapping) else None
+    answer_assets = assets.get("KnowledgeBaseAnswer") if isinstance(assets, Mapping) else None
+    answer = answer_assets.get(str(answer_id)) if isinstance(answer_assets, Mapping) else None
+    category_id = answer.get("category_id") if isinstance(answer, Mapping) else None
+    category_id = _validate_id(category_id)
+    category_value = await _get(f"/knowledge_bases/{knowledge_base_id}/categories/{category_id}")
+    return project_knowledge_base_publication_snapshot(
+        answer_value, knowledge_base_id, answer_id, category_value
+    )
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_publication_state(
+    knowledge_base_id: int,
+    answer_id: int,
+) -> str:
+    """Read a Knowledge Base answer's scheduled publication timestamps and current state."""
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    snapshot = await _knowledge_base_publication_snapshot(kb_id, item_id)
+    return _json({**snapshot, "state": knowledge_base_publication_state(snapshot)})
 
 
 @mcp.tool()
@@ -2924,6 +3004,147 @@ async def zammad_prepare_knowledge_base_menu_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_order_change(
+    knowledge_base_id: int,
+    kind: Literal["root_categories", "categories", "answers"],
+    ordered_ids: list[int],
+    category_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare a complete Knowledge Base sibling reorder without writing."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    parent_id = _validate_id(category_id) if category_id is not None else None
+    if kind == "root_categories" and parent_id is not None:
+        raise ValueError("root_categories does not accept category_id")
+    if kind != "root_categories" and parent_id is None:
+        raise ValueError("category_id is required for child category and answer ordering")
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base ordering changes require acknowledge_high_impact=true")
+    before = await _knowledge_base_order_snapshot(kb_id, kind, parent_id)
+    normalized = validate_knowledge_base_order(ordered_ids, before)
+    after = preview_knowledge_base_order_after(before, normalized)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_order__", "operation": "reorder",
+        "object_id": parent_id, "parent_id": kb_id, "kind": kind,
+        "write_path": _knowledge_base_order_path(kb_id, kind, parent_id),
+        "data": {"ordered_ids": normalized}, "before": before,
+        "fingerprint": _digest(before), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_ordering", "operation": "reorder",
+        "knowledge_base_id": kb_id, "category_id": parent_id, "kind": kind,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes the public order of every sibling in the selected category or answer collection.",
+        "before": before, "after": after, "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_publication_transition(
+    knowledge_base_id: int,
+    answer_id: int,
+    action: Literal["internal", "publish", "archive", "unarchive"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare one Zammad-supported Knowledge Base answer visibility transition."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base publication transitions require acknowledge_high_impact=true")
+    before = await _knowledge_base_publication_snapshot(kb_id, item_id)
+    state_before = knowledge_base_publication_state(before)
+    state_after = validate_knowledge_base_publication_transition(before, action)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_publication_transition__", "operation": action,
+        "object_id": item_id, "parent_id": kb_id, "before": before,
+        "state_before": state_before, "state_after": state_after,
+        "fingerprint": _digest(before), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_publication", "operation": action,
+        "knowledge_base_id": kb_id, "answer_id": item_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes internal or public article visibility; Zammad recalculates the active-public-Knowledge-Base setting and scheduled touches.",
+        "before": {**before, "state": state_before},
+        "after": {"state": state_after, "action": action},
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_publication_schedule(
+    knowledge_base_id: int,
+    answer_id: int,
+    updates: dict[str, str | None],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare timestamp or timer changes for internal, public, and archived visibility."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    item_id = _validate_id(answer_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base publication scheduling requires acknowledge_high_impact=true")
+    before = await _knowledge_base_publication_snapshot(kb_id, item_id)
+    normalized, after = validate_knowledge_base_schedule_updates(updates, before)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    state_before = knowledge_base_publication_state(before)
+    state_after = knowledge_base_publication_state(after)
+    plan = {
+        "resource": "__knowledge_base_publication_schedule__", "operation": "schedule",
+        "object_id": item_id, "parent_id": kb_id, "data": normalized,
+        "before": before, "state_before": state_before,
+        "fingerprint": _digest(before), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_publication", "operation": "schedule",
+        "knowledge_base_id": kb_id, "answer_id": item_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes scheduled article visibility and may alter public access; Zammad updates actor references, scheduled touches, and the active-public-Knowledge-Base setting.",
+        "before": {**before, "state": state_before},
+        "after": {**after, "state": state_after},
+        "write_payload": normalized,
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_record_change(
     knowledge_base_id: int,
     kind: Literal["answers", "categories"],
@@ -3818,11 +4039,30 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_menu__":
             current = await _knowledge_base_menu_snapshot(plan["object_id"], plan["location"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__knowledge_base_order__":
+            current = await _knowledge_base_order_snapshot(
+                plan["parent_id"], plan["kind"], plan["object_id"]
+            )
+            current_fingerprint = _digest(current)
+        elif plan["resource"] in {
+            "__knowledge_base_publication_transition__",
+            "__knowledge_base_publication_schedule__",
+        }:
+            current = await _knowledge_base_publication_snapshot(plan["parent_id"], plan["object_id"])
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
         if current_fingerprint != plan["fingerprint"]:
             raise RuntimeError("The resource changed after preview; prepare a new plan")
+        if (
+            plan["resource"] in {
+                "__knowledge_base_publication_transition__",
+                "__knowledge_base_publication_schedule__",
+            }
+            and knowledge_base_publication_state(current) != plan["state_before"]
+        ):
+            raise RuntimeError("The Knowledge Base answer publication state changed after preview; prepare a new plan")
         for dependency in plan.get("dependencies", []):
             dependency_current = await _get(dependency["path"])
             if _digest(dependency_current) != dependency["fingerprint"]:
@@ -4065,6 +4305,39 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "locales_updated": len(data["menu_items_sets"]),
                 "updated": True,
             }
+        elif resource == "__knowledge_base_order__":
+            await _request("PATCH", plan["write_path"], data)
+            result = {
+                "knowledge_base_id": plan["parent_id"],
+                "category_id": plan["object_id"],
+                "kind": plan["kind"],
+                "ordered_ids": data["ordered_ids"],
+                "reordered": True,
+            }
+        elif resource == "__knowledge_base_publication_transition__":
+            await _request(
+                "POST",
+                f"/knowledge_bases/{plan['parent_id']}/answers/{plan['object_id']}/{operation}",
+                {},
+            )
+            result = {
+                "knowledge_base_id": plan["parent_id"],
+                "answer_id": plan["object_id"],
+                "transition": operation,
+                "state": plan["state_after"],
+            }
+        elif resource == "__knowledge_base_publication_schedule__":
+            await _request(
+                "POST",
+                f"/knowledge_bases/{plan['parent_id']}/answers/{plan['object_id']}/has_publishing_update",
+                data,
+            )
+            result = {
+                "knowledge_base_id": plan["parent_id"],
+                "answer_id": plan["object_id"],
+                "scheduled": True,
+                "timestamps_returned": False,
+            }
         elif resource in {"__knowledge_base_permissions__", "__knowledge_base_category_permissions__"}:
             result = await _request("PATCH", plan["write_path"], data)
             result = {"updated": isinstance(result, Mapping), "permission_details_returned": False}
@@ -4274,6 +4547,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__organization_import__": "organization_imports",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
         "__knowledge_base_menu__": "knowledge_base_menu_items",
+        "__knowledge_base_order__": "knowledge_base_ordering",
+        "__knowledge_base_publication_transition__": "knowledge_base_publication",
+        "__knowledge_base_publication_schedule__": "knowledge_base_publication",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."

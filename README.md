@@ -169,12 +169,17 @@ Knowledge base:
 - `zammad_list_knowledge_bases`
 - `zammad_get_knowledge_base`
 - `zammad_get_knowledge_base_menu_items`
+- `zammad_get_knowledge_base_order`
+- `zammad_get_knowledge_base_publication_state`
 - `zammad_list_knowledge_base_categories`
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
 - `zammad_prepare_knowledge_base_lifecycle_change`
 - `zammad_prepare_knowledge_base_menu_change`
+- `zammad_prepare_knowledge_base_order_change`
+- `zammad_prepare_knowledge_base_publication_transition`
+- `zammad_prepare_knowledge_base_publication_schedule`
 - `zammad_prepare_knowledge_base_permissions_change`
 - `zammad_prepare_knowledge_base_category_permissions_change`
 
@@ -182,6 +187,8 @@ Category record reads include the full category assets so translated names and t
 Knowledge Base discovery uses Zammad's fixed `POST /knowledge_bases/init` read route. It lists the records available to the authenticated Zammad user, with translated titles and relationship IDs; answer bodies are not requested or returned.
 Activation and deactivation use staged plans against the installed `PATCH /knowledge_bases/manage/:id/activate` and `PATCH /knowledge_bases/manage/:id/deactivate` routes. Apply checks that the Knowledge Base record has not changed since preview.
 Public header/footer menu reads are projected to the selected Knowledge Base and location. Updates require complete entry sets for every configured locale, preserve existing IDs, and are rejected when those menu entries or locales change after preview.
+Category and answer ordering reads expose sibling IDs and positions. Reorder plans must include the complete sibling ID set and are rejected if membership or positions change before apply.
+Publication transitions and schedule changes use Zammad's fixed answer-state routes. Previews include timestamp, actor, category, and calculated-state snapshots; apply rejects changed snapshots or a naturally transitioned state. Schedule updates allow only `internal_at`, `published_at`, and `archived_at`, enforce their ordering, and use `--now--` for immediate changes or `null` to clear a timer.
 
 Translations:
 

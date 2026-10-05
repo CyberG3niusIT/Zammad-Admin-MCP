@@ -128,6 +128,11 @@ def project_inventory(value: Any) -> dict[str, Any]:
         projected = {"id": record["id"]}
         if "category_id" in record:
             projected["category_id"] = _relationship_id(record["category_id"], "answer category_id")
+        if "position" in record:
+            position = record["position"]
+            if isinstance(position, bool) or not isinstance(position, int):
+                raise RuntimeError("Zammad returned an invalid Knowledge Base answer position")
+            projected["position"] = position
         if "translation_ids" in record:
             projected["translation_ids"] = _ids(record["translation_ids"], "answer translation IDs")
         answers.append(projected)
