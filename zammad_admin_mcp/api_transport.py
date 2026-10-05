@@ -50,7 +50,7 @@ async def request(
         headers["Content-Type"] = "application/json"
     async with httpx.AsyncClient(
         base_url=_api_root(), headers=headers,
-        timeout=httpx.Timeout(30.0), follow_redirects=False,
+        timeout=httpx.Timeout(120.0 if (method, path) == ("POST", "/users/import") else 30.0), follow_redirects=False,
     ) as client:
         request_options: dict[str, Any] = {"params": params}
         if files is None:

@@ -83,6 +83,9 @@ from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_reque
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
+from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
+from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
+from zammad_admin_mcp.admin_schemas.user_imports import validate_csv_input as validate_user_import_input
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -493,6 +496,7 @@ async def _request(
         "/tickets/selector",
         "/applications/token",
         "/settings/ticket_agent_default_notifications/apply_to_all",
+        "/users/import",
         "/calendars/timezones",
         "/knowledge_bases/init",
         "/http_logs",
@@ -569,6 +573,8 @@ async def _request(
         raise ValueError("Time accounting reports support GET only")
     if path == "/settings/ticket_agent_default_notifications/apply_to_all" and method != "POST":
         raise ValueError("Applying ticket agent notification defaults supports POST only")
+    if path == "/users/import" and method != "POST":
+        raise ValueError("User CSV imports support POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
@@ -970,12 +976,73 @@ async def zammad_list_admin_resources() -> str:
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
+        "user_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates users in bulk; imports can change user identity, organization, and role assignments."},
         "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
         "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
         "proxy_test": {"operations": ["test"], "risk": "Sends an outbound HTTP request from Zammad through the selected proxy; does not save settings."},
         "pgp_keys": {"operations": ["read", "create", "delete"], "risk": "Manages PGP private keys; key material and passphrases are never returned."},
         "smime_certificates": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME certificates; deletion also removes an associated private key."},
         "smime_private_keys": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME private keys; key material and passphrases are never returned."},
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_user_import(
+    csv_data: str,
+    separator: str = ",",
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a Zammad user CSV import without returning imported user data."""
+    global _PLAN_CLEANER
+    if not acknowledge_high_impact:
+        raise ValueError("User imports can create or update many accounts and roles; set acknowledge_high_impact=true to prepare")
+    csv_data, separator = validate_user_import_input(csv_data, separator)
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+
+    before = await _user_import_inventory_snapshot()
+    preview = await _run_user_import(csv_data, separator, dry_run=True)
+    after = await _user_import_inventory_snapshot()
+    if before["fingerprint"] != after["fingerprint"]:
+        raise RuntimeError("The user inventory changed during CSV preview; no import plan was created")
+    if preview["result"] != "success":
+        return _json({
+            "resource": "user_imports",
+            "plan_created": False,
+            "preview": preview,
+            "note": "Zammad's CSV dry-run did not succeed. No import plan was created and imported records were omitted.",
+        })
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__user_import__",
+        "operation": "import",
+        "data": {"csv_data": csv_data, "separator": separator},
+        "fingerprint": before["fingerprint"],
+        "before": {"user_count": before["count"]},
+        "import_preview": preview,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if any(item.get("resource") == "__user_import__" for item in _PLANS.values()):
+            raise ValueError("Only one user CSV import plan can be active at a time")
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "user_imports",
+        "operation": "import",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "user_count_at_preview": before["count"],
+        "preview": preview,
+        "risk": "Applying this plan can create or update multiple user accounts, identities, organizations, and role assignments.",
+        "approval_required": True,
+        "note": "Zammad's dry-run rolled back its database transaction. The CSV is held only in the MCP process plan for up to five minutes; it is not returned or written to disk. Apply rechecks the user inventory and dry-run summary before importing.",
     })
 
 
@@ -1140,6 +1207,38 @@ async def _data_privacy_deletion_snapshot(kind: str, object_id: int, delete_orga
                 raise ValueError("The organization can be included only when the selected user is its sole member")
             snapshot["organization"] = organization
     return snapshot
+
+
+async def _user_import_inventory_snapshot() -> dict[str, Any]:
+    users: list[Mapping[str, Any]] = []
+    page = 1
+    while True:
+        batch = await _get("/users", {"page": page, "per_page": 100})
+        if not isinstance(batch, list) or any(not isinstance(item, Mapping) for item in batch):
+            raise RuntimeError("Zammad did not return a valid user inventory")
+        users.extend(batch)
+        if len(batch) < 100:
+            break
+        if len(users) >= 100_000:
+            raise RuntimeError("User inventory is too large to stage a safe CSV import")
+        page += 1
+    return {"count": len(users), "fingerprint": _crypto_digest(users)}
+
+
+async def _run_user_import(csv_data: str, separator: str, *, dry_run: bool) -> dict[str, Any]:
+    try:
+        result = await _request(
+            "POST",
+            "/users/import",
+            {"data": csv_data, "col_sep": separator},
+            {"try": "true" if dry_run else "false"},
+        )
+    except RuntimeError:
+        raise RuntimeError("Zammad rejected the user CSV import request; details were withheld") from None
+    projected = project_user_import_result(result)
+    if projected["dry_run"] is not dry_run:
+        raise RuntimeError("Zammad did not confirm the requested user import mode")
+    return projected
 
 
 def _data_privacy_deletion_preview(kind: str, snapshot: Mapping[str, Any], delete_organization: bool) -> dict[str, Any]:
@@ -3419,6 +3518,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__crypto_material__":
             current = await _crypto_material_snapshot(plan["crypto_resource"], plan["object_id"])
             current_fingerprint = _crypto_digest(current)
+        elif plan["resource"] == "__user_import__":
+            current = await _user_import_inventory_snapshot()
+            current_fingerprint = current["fingerprint"]
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -3431,7 +3533,15 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
-        if resource == "__ldap_connection_action__":
+        if resource == "__user_import__":
+            fresh_preview = await _run_user_import(data["csv_data"], data["separator"], dry_run=True)
+            after_preview = await _user_import_inventory_snapshot()
+            if after_preview["fingerprint"] != plan["fingerprint"]:
+                raise RuntimeError("The user inventory changed during final import preview; prepare a new plan")
+            if not equivalent_user_import_results(plan["import_preview"], fresh_preview):
+                raise RuntimeError("The user import result changed after preview; prepare a new plan")
+            result = await _run_user_import(data["csv_data"], data["separator"], dry_run=False)
+        elif resource == "__ldap_connection_action__":
             path = "/integration/ldap/discover" if operation == "discover" else "/integration/ldap/bind"
             payload = dict(data)
             if operation == "bind" and plan["object_id"] is not None:
@@ -3828,6 +3938,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__user_unlock__": "user_unlock",
         "__proxy_test__": "proxy_test",
         "__crypto_material__": plan.get("crypto_resource", "cryptographic_material"),
+        "__user_import__": "user_imports",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -3849,6 +3960,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The one-time outbound connectivity check completed. No proxy settings were saved."
     elif resource == "__crypto_material__":
         response_note = "Plan consumed. Cryptographic changes affect message signing, encryption, or decryption. Key material and passphrases are never returned; inspect the safe metadata before retrying if the result is uncertain."
+    elif resource == "__user_import__":
+        response_note = "Plan consumed. The response contains only aggregate counts and sanitized row error codes. Do not retry if the result is uncertain; inspect the Zammad user list first."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

@@ -124,6 +124,7 @@ Supported workflows include:
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - existing Microsoft 365 and Microsoft Graph mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; probes return only status and message counts, while OAuth account linking remains in Zammad's browser flow
 - existing Google mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
+- User CSV import uses Zammad's transactional `try=true` preview, a short-lived in-memory plan, a complete user-inventory stale check, and explicit high-impact approval before import; imported records and row error text are never returned
 - Google and Microsoft 365 channels with a stored migration backup can be rolled back through a staged plan that previews restored metadata without showing the saved configuration
 - Web channel settings can be listed by Zammad area (for example `CustomerWeb::Base`) and changed through the staged settings workflow
 - Google OAuth, SAML, and OpenID Connect settings can be read with safe field projections and updated through provider-specific staged plans; key material uses process environment references
@@ -213,6 +214,8 @@ Object Manager migrations:
 AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_agents`, or `ai_text_tools`, plus the staged `zammad_prepare_admin_change` operations for the writable resource names.
 
 Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
+
+User administration also provides `zammad_prepare_user_import` for a CSV dry-run and staged import. It accepts CSV content directly (up to 5 MiB), never reads a server-side path, excludes destructive CSV deletion, and returns aggregate counts and sanitized error codes only. The source CSV remains in one volatile plan for up to five minutes so the apply step can use the exact previewed data.
 
 Package operations can write executable code or reverse database migrations. Review the package source and the full preview before approval. The MCP does not run the listed dependency, migration, or service restart follow-up commands.
 
