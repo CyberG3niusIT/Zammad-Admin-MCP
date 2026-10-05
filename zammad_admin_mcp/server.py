@@ -813,7 +813,9 @@ async def zammad_prepare_admin_change(
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
-    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
+    if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"} and not (
+        resource == "user_access_tokens" and operation == "create"
+    ):
         before_preview = before
 
     plan_id = secrets.token_urlsafe(24)
