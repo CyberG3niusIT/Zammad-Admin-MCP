@@ -11,7 +11,7 @@ The original live tool registry was read-only: server version, groups, roles, ex
 | Admin area | Read | Write | Notes / required safeguards |
 |---|---|---|---|
 | Groups, roles, permissions, memberships | Read + staged CRUD | Staged CRUD | Preserve the confirmed Admin-equivalent `Codex-Zammad-Anpassung` role. Role changes can alter administrative access. |
-| Checklist templates, tag administration, audit log | Read + staged CRUD for templates/tags; read-only audit log | Staged CRUD for templates/tags | Deleting/renaming shared checklist and tag definitions can affect agent workflows and categorization. Audit log is read-only. Live route verification remains pending. |
+| Checklist templates, tag administration, audit log | Checklist templates and tags read; audit log endpoint unavailable (HTTP 404) | Staged CRUD for templates/tags | The two collection reads were verified on 7.1.2 (0 checklist templates, 1 tag); audit log route `/audit_logs` returned 404. Deleting/renaming shared definitions can affect agent workflows and categorization. |
 | Users / agents / organizations | Read + staged CRUD | Staged CRUD | Deletions are explicitly high impact because they can affect related records and access. |
 | Ticket states and priorities | Read + staged CRUD | Staged CRUD | Other ticket data is intentionally outside this admin resource registry. Check references before deleting values. |
 | Calendars and SLAs | Read + staged CRUD | Staged CRUD | Validate cross-resource dependencies and time-zone/business-hour payloads. |

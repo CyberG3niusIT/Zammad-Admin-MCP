@@ -49,7 +49,6 @@ _RESOURCES: dict[str, Resource] = {
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
     "checklist_templates": Resource("/checklist_templates", risk="Changes reusable checklists available to agents.", high_impact=True),
     "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
-    "audit_logs": Resource("/audit_logs", operations=frozenset(), risk="Read-only security and configuration change history."),
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
     "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
     "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update"}), risk="Schema changes can affect stored data and require a separate migration/restart workflow.", high_impact=True),
