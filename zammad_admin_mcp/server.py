@@ -85,8 +85,10 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_invento
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
+from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_organization_import_result
 from zammad_admin_mcp.admin_schemas.user_imports import validate_csv_input as validate_user_import_input
 from zammad_admin_mcp.admin_schemas.user_history import project_history as project_user_history
+from zammad_admin_mcp.admin_schemas.user_history import project_history as project_organization_history
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -101,7 +103,7 @@ class Resource:
 
 _RESOURCES: dict[str, Resource] = {
     "groups": Resource("/groups", risk="Changes ticket routing and group access.", high_impact=True),
-    "roles": Resource("/roles", risk="Changes user permissions and may remove administrative access.", high_impact=True),
+    "roles": Resource("/roles", operations=frozenset({"create", "update"}), risk="Changes user permissions and may remove administrative access.", high_impact=True),
     "calendars": Resource("/calendars", risk="Changes working hours used by SLAs.", high_impact=True),
     "slas": Resource("/slas", risk="Changes ticket escalation and response targets.", high_impact=True),
     "triggers": Resource("/triggers", risk="May send email or invoke webhooks for future ticket events.", high_impact=True),
@@ -152,7 +154,7 @@ _RESOURCES: dict[str, Resource] = {
     "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
     "users": Resource("/users", operations=frozenset({"create", "update", "delete", "unlock"}), risk="Changes user identity, roles, and access; unlocking permits a locked account to authenticate again.", high_impact=True),
-    "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update", "delete"}), risk="Attribute changes are queued until migration; executing a removal migration drops the database column and permanently deletes its values.", high_impact=True),
+    "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update", "delete", "discard_changes"}), risk="Attribute changes are queued until migration. Discarding removes queued additions and clears pending changes; executing removal migrations permanently deletes their values.", high_impact=True),
     "user_access_tokens": Resource(
         "/user_access_token",
         operations=frozenset({"create", "delete"}),
@@ -497,7 +499,9 @@ async def _request(
         "/tickets/selector",
         "/applications/token",
         "/settings/ticket_agent_default_notifications/apply_to_all",
+        "/object_manager_attributes_discard_changes",
         "/users/import",
+        "/organizations/import",
         "/calendars/timezones",
         "/knowledge_bases/init",
         "/http_logs",
@@ -538,6 +542,7 @@ async def _request(
     time_accounting_report_path = bool(re.fullmatch(r"/time_accounting/log/(?:by_activity|by_ticket|by_customer|by_organization)/\d{4}/\d{1,2}", path))
     user_unlock_path = bool(re.fullmatch(r"/users/unlock/\d+", path))
     user_history_path = bool(re.fullmatch(r"/users/history/\d+", path))
+    organization_history_path = bool(re.fullmatch(r"/organizations/history/\d+", path))
     user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
     http_log_facility_path = path in _HTTP_LOG_FACILITY_PATHS.values()
     fixed_special_paths = (
@@ -550,7 +555,7 @@ async def _request(
         translation_reset_path, translation_upsert_path,
         ticket_item_path, ticket_selector_path, oauth_application_token_path,
         time_accounting_report_path,
-        user_unlock_path, user_two_factor_path, user_history_path,
+        user_unlock_path, user_two_factor_path, user_history_path, organization_history_path,
         http_log_facility_path,
         bool(re.fullmatch(r"/integration/pgp/key/\d+", path)),
     )
@@ -575,8 +580,12 @@ async def _request(
         raise ValueError("Time accounting reports support GET only")
     if path == "/settings/ticket_agent_default_notifications/apply_to_all" and method != "POST":
         raise ValueError("Applying ticket agent notification defaults supports POST only")
+    if path == "/object_manager_attributes_discard_changes" and method != "POST":
+        raise ValueError("Discarding queued object manager changes supports POST only")
     if path == "/users/import" and method != "POST":
         raise ValueError("User CSV imports support POST only")
+    if path == "/organizations/import" and method != "POST":
+        raise ValueError("Organization CSV imports support POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
@@ -589,6 +598,8 @@ async def _request(
         raise ValueError("User unlock supports PUT only")
     if user_history_path and method != "GET":
         raise ValueError("User history supports GET only")
+    if organization_history_path and method != "GET":
+        raise ValueError("Organization history supports GET only")
     if user_two_factor_path:
         expected_method = "GET" if path.endswith("/enabled_authentication_methods") else "DELETE"
         if method != expected_method:
@@ -716,6 +727,16 @@ async def zammad_get_user_history(user_id: int, limit: int = 100) -> str:
         raise ValueError("limit must be an integer between 1 and 500")
     history = await _get(f"/users/history/{user_id}")
     return _json({"user_id": user_id, **project_user_history(history, limit)})
+
+
+@mcp.tool()
+async def zammad_get_organization_history(organization_id: int, limit: int = 100) -> str:
+    """Read recent organization history with secret-like field values redacted."""
+    organization_id = _validate_id(organization_id)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+        raise ValueError("limit must be an integer between 1 and 500")
+    history = await _get(f"/organizations/history/{organization_id}")
+    return _json({"organization_id": organization_id, **project_organization_history(history, limit)})
 
 
 @mcp.tool()
@@ -991,7 +1012,9 @@ async def zammad_list_admin_resources() -> str:
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
         "user_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates users in bulk; imports can change user identity, organization, and role assignments."},
+        "organization_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates organizations in bulk and may change names, domains, sharing, or notes."},
         "user_history": {"operations": ["read"], "risk": "Returns recent account change metadata; secret-like field values are redacted and related user assets are omitted."},
+        "organization_history": {"operations": ["read"], "risk": "Returns recent organization change metadata; secret-like field values are redacted and related assets are omitted."},
         "user_unlock": {"operations": ["unlock"], "risk": "Allows a user whose failed-login count exceeds the configured threshold to authenticate again."},
         "user_two_factor_authentication": {"operations": ["read", "remove_method", "remove_all"], "risk": "Removes one or all configured two-factor methods from a user and can weaken sign-in protection."},
         "proxy_test": {"operations": ["test"], "risk": "Sends an outbound HTTP request from Zammad through the selected proxy; does not save settings."},
@@ -1058,6 +1081,66 @@ async def zammad_prepare_user_import(
         "risk": "Applying this plan can create or update multiple user accounts, identities, organizations, and role assignments.",
         "approval_required": True,
         "note": "Zammad's dry-run rolled back its database transaction. The CSV is held only in the MCP process plan for up to five minutes; it is not returned or written to disk. Apply rechecks the user inventory and dry-run summary before importing.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_organization_import(
+    csv_data: str,
+    separator: str = ",",
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a Zammad organization CSV import without returning imported organization data."""
+    global _PLAN_CLEANER
+    if not acknowledge_high_impact:
+        raise ValueError("Organization imports can create or update organizations in bulk; set acknowledge_high_impact=true to prepare")
+    csv_data, separator = validate_user_import_input(csv_data, separator)
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+
+    before = await _organization_import_inventory_snapshot()
+    preview = await _run_organization_import(csv_data, separator, dry_run=True)
+    after = await _organization_import_inventory_snapshot()
+    if before["fingerprint"] != after["fingerprint"]:
+        raise RuntimeError("The organization inventory changed during CSV preview; no import plan was created")
+    if preview["result"] != "success":
+        return _json({
+            "resource": "organization_imports",
+            "plan_created": False,
+            "preview": preview,
+            "note": "Zammad's CSV dry-run did not succeed. No import plan was created and imported records were omitted.",
+        })
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__organization_import__",
+        "operation": "import",
+        "data": {"csv_data": csv_data, "separator": separator},
+        "fingerprint": before["fingerprint"],
+        "before": {"organization_count": before["count"]},
+        "import_preview": preview,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if any(item.get("resource") == "__organization_import__" for item in _PLANS.values()):
+            raise ValueError("Only one organization CSV import plan can be active at a time")
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "organization_imports",
+        "operation": "import",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "organization_count_at_preview": before["count"],
+        "preview": preview,
+        "risk": "Applying this plan can create or update multiple organization records and their attributes.",
+        "approval_required": True,
+        "note": "Zammad's dry-run rolled back its database transaction. The CSV is held only in the MCP process plan for up to five minutes; it is not returned or written to disk. Apply rechecks the organization inventory and dry-run summary before importing.",
     })
 
 
@@ -1240,6 +1323,22 @@ async def _user_import_inventory_snapshot() -> dict[str, Any]:
     return {"count": len(users), "fingerprint": _crypto_digest(users)}
 
 
+async def _organization_import_inventory_snapshot() -> dict[str, Any]:
+    organizations: list[Mapping[str, Any]] = []
+    page = 1
+    while True:
+        batch = await _get("/organizations", {"page": page, "per_page": 100})
+        if not isinstance(batch, list) or any(not isinstance(item, Mapping) for item in batch):
+            raise RuntimeError("Zammad did not return a valid organization inventory")
+        organizations.extend(batch)
+        if len(batch) < 100:
+            break
+        if len(organizations) >= 100_000:
+            raise RuntimeError("Organization inventory is too large to stage a safe CSV import")
+        page += 1
+    return {"count": len(organizations), "fingerprint": _crypto_digest(organizations)}
+
+
 async def _run_user_import(csv_data: str, separator: str, *, dry_run: bool) -> dict[str, Any]:
     try:
         result = await _request(
@@ -1253,6 +1352,22 @@ async def _run_user_import(csv_data: str, separator: str, *, dry_run: bool) -> d
     projected = project_user_import_result(result)
     if projected["dry_run"] is not dry_run:
         raise RuntimeError("Zammad did not confirm the requested user import mode")
+    return projected
+
+
+async def _run_organization_import(csv_data: str, separator: str, *, dry_run: bool) -> dict[str, Any]:
+    try:
+        result = await _request(
+            "POST",
+            "/organizations/import",
+            {"data": csv_data, "col_sep": separator},
+            {"try": "true" if dry_run else "false"},
+        )
+    except RuntimeError:
+        raise RuntimeError("Zammad rejected the organization CSV import request; details were withheld") from None
+    projected = project_organization_import_result(result, "organization")
+    if projected["dry_run"] is not dry_run:
+        raise RuntimeError("Zammad did not confirm the requested organization import mode")
     return projected
 
 
@@ -1764,6 +1879,47 @@ async def zammad_prepare_object_manager_migrations(acknowledge_high_impact: bool
         "risk": risk, "pending_changes": preview, "removed_attributes": removed,
         "approval_required": True,
         "note": "No migration was executed. The plan covers all pending object manager changes and is rejected if that queue changes before apply.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_object_manager_discard_changes(acknowledge_high_impact: bool = False) -> str:
+    """Preview discarding all queued object manager changes without reversing completed migrations."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Discarding object manager changes requires acknowledge_high_impact=true")
+    pending = await _object_manager_migration_snapshot()
+    if not pending:
+        raise ValueError("There are no queued object manager changes to discard")
+    preview = _object_manager_migration_preview(pending)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__object_manager_discard_changes__",
+        "operation": "discard_changes",
+        "data": {},
+        "fingerprint": _digest(pending),
+        "before": preview,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "object_manager_attributes",
+        "operation": "discard_changes",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "pending_changes": preview,
+        "risk": "Discards every currently queued object manager change. New, not-yet-migrated attributes are removed and pending change flags are cleared. Completed migrations are not reversed.",
+        "approval_required": True,
+        "note": "No changes were discarded. The plan is rejected if the pending object manager queue changes before apply.",
     })
 
 
@@ -3507,6 +3663,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__object_manager_migrations__":
             current = await _object_manager_migration_snapshot()
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__object_manager_discard_changes__":
+            current = await _object_manager_migration_snapshot()
+            current_fingerprint = _digest(current)
         elif plan["resource"] == "__session_action__":
             current = await _session_snapshot(plan["object_id"])
             current_fingerprint = _digest(current[0]) if current is not None else None
@@ -3536,6 +3695,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__user_import__":
             current = await _user_import_inventory_snapshot()
             current_fingerprint = current["fingerprint"]
+        elif plan["resource"] == "__organization_import__":
+            current = await _organization_import_inventory_snapshot()
+            current_fingerprint = current["fingerprint"]
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -3556,6 +3718,14 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             if not equivalent_user_import_results(plan["import_preview"], fresh_preview):
                 raise RuntimeError("The user import result changed after preview; prepare a new plan")
             result = await _run_user_import(data["csv_data"], data["separator"], dry_run=False)
+        elif resource == "__organization_import__":
+            fresh_preview = await _run_organization_import(data["csv_data"], data["separator"], dry_run=True)
+            after_preview = await _organization_import_inventory_snapshot()
+            if after_preview["fingerprint"] != plan["fingerprint"]:
+                raise RuntimeError("The organization inventory changed during final import preview; prepare a new plan")
+            if not equivalent_user_import_results(plan["import_preview"], fresh_preview):
+                raise RuntimeError("The organization import result changed after preview; prepare a new plan")
+            result = await _run_organization_import(data["csv_data"], data["separator"], dry_run=False)
         elif resource == "__ldap_connection_action__":
             path = "/integration/ldap/discover" if operation == "discover" else "/integration/ldap/bind"
             payload = dict(data)
@@ -3839,6 +4009,15 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "attribute_count": len(plan["before"]),
                 "removed_attribute_count": sum(1 for item in plan["before"] if item.get("to_delete") is True),
             }
+        elif resource == "__object_manager_discard_changes__":
+            await _request("POST", "/object_manager_attributes_discard_changes", {})
+            pending = plan["before"]
+            result = {
+                "changes_discarded": True,
+                "attribute_count": len(pending),
+                "queued_additions_removed": sum(1 for item in pending if item.get("to_create") is True),
+                "completed_migrations_reversed": False,
+            }
         elif resource == "__session_action__":
             await _request("DELETE", f"/sessions/{_validate_id(plan['object_id'])}")
             result = {"session_terminated": True, "session_id": plan["object_id"]}
@@ -3954,6 +4133,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__proxy_test__": "proxy_test",
         "__crypto_material__": plan.get("crypto_resource", "cryptographic_material"),
         "__user_import__": "user_imports",
+        "__organization_import__": "organization_imports",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -3977,6 +4157,10 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "Plan consumed. Cryptographic changes affect message signing, encryption, or decryption. Key material and passphrases are never returned; inspect the safe metadata before retrying if the result is uncertain."
     elif resource == "__user_import__":
         response_note = "Plan consumed. The response contains only aggregate counts and sanitized row error codes. Do not retry if the result is uncertain; inspect the Zammad user list first."
+    elif resource == "__organization_import__":
+        response_note = "Plan consumed. The response contains only aggregate counts and sanitized row error codes. Do not retry if the result is uncertain; inspect the Zammad organization list first."
+    elif resource == "__object_manager_discard_changes__":
+        response_note = "The queued changes were discarded; completed database migrations were not reversed. Inspect the Object Manager queue before retrying if the result is uncertain."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

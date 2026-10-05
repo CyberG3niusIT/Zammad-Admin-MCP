@@ -136,7 +136,7 @@ Supported workflows include:
 - PGP keys and S/MIME certificates/private keys can be listed and changed through dedicated staged workflows. Private keys and passphrases require process environment references; public PGP keys may be provided directly. Reads, previews, and apply results expose only safe metadata and configured booleans
 - Package management can list installed packages and stage install/removal plans; install payloads are size-limited and summarized without returning package file contents
 - The system report is available as a redacted summary that excludes setting values, environment data, hardware identifiers, paths, and activity timestamps
-- Object Manager attribute removals and the global queued-migration action use separate previews; removal migrations permanently drop the affected database column and its values
+- Object Manager attribute removals, discarding the entire pending queue, and executing the global migration queue use separate previews; discard does not reverse completed migrations, while removal migrations permanently drop the affected database column and its values
 - AI agents and Writing Assistant tools can be read and changed through staged CRUD; AI agent previews show Trigger, Job/Scheduler, and Macro references and reject stale reference sets, while previews also call out automated ticket effects or external provider usage charges
 - Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
 - Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
@@ -210,12 +210,13 @@ Packages:
 Object Manager migrations:
 
 - `zammad_prepare_object_manager_migrations`
+- `zammad_prepare_object_manager_discard_changes`
 
 AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_agents`, or `ai_text_tools`, plus the staged `zammad_prepare_admin_change` operations for the writable resource names.
 
 Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
 
-User administration also provides `zammad_get_user_history` for recent account changes and `zammad_prepare_user_import` for a CSV dry-run and staged import. History omits related user assets and redacts values for secret-like attributes; the import accepts CSV content directly (up to 5 MiB), never reads a server-side path, excludes destructive CSV deletion, and returns aggregate counts and sanitized error codes only. The source CSV remains in one volatile plan for up to five minutes so the apply step can use the exact previewed data.
+User and organization administration also provides `zammad_get_user_history` and `zammad_get_organization_history` for recent changes, plus `zammad_prepare_user_import` and `zammad_prepare_organization_import` for CSV dry-runs and staged imports. History omits related assets and redacts values for secret-like attributes. Both import tools accept CSV content directly (up to 5 MiB), never read a server-side path, exclude destructive CSV deletion, and return aggregate counts and sanitized error codes only. Each source CSV remains in one volatile plan for up to five minutes so the apply step can use the exact previewed data.
 
 Package operations can write executable code or reverse database migrations. Review the package source and the full preview before approval. The MCP does not run the listed dependency, migration, or service restart follow-up commands.
 
@@ -283,7 +284,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- After the authorized App Server restart on 2026-10-05, the live registry advertised 71 API-backed resource kinds; Knowledge Base discovery and sanitized HTTP log metadata were invoked successfully.
+- After the authorized App Server reload on 2026-10-06, the live registry advertised 73 API-backed resource kinds, including user CSV import and user history. The source now defines 75 resource kinds and adds organization history, organization CSV import, and a staged Object Manager discard plan; these changes await the next MCP reload.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed

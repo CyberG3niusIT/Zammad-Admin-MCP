@@ -19,13 +19,15 @@ def validate_csv_input(csv_data: Any, separator: Any) -> tuple[str, str]:
     return csv_data, separator
 
 
-def project_result(value: Any) -> dict[str, Any]:
+def project_result(value: Any, entity: str = "user") -> dict[str, Any]:
+    if entity not in {"user", "organization"}:
+        raise ValueError("entity must be user or organization")
     if not isinstance(value, Mapping):
-        raise RuntimeError("Zammad did not return a user import result")
+        raise RuntimeError(f"Zammad did not return a {entity} import result")
 
     result = value.get("result")
     if not isinstance(result, str) or result not in {"success", "failed"}:
-        raise RuntimeError("Zammad returned an invalid user import result")
+        raise RuntimeError(f"Zammad returned an invalid {entity} import result")
 
     projected: dict[str, Any] = {
         "result": result,
@@ -41,7 +43,7 @@ def project_result(value: Any) -> dict[str, Any]:
                 safe_stats[field] = count
         projected["stats"] = safe_stats
     if result == "success" and not {"created", "updated"}.issubset(projected.get("stats", {})):
-        raise RuntimeError("Zammad returned incomplete user import counts")
+        raise RuntimeError(f"Zammad returned incomplete {entity} import counts")
 
     errors = value.get("errors", [])
     if not isinstance(errors, list):
@@ -55,8 +57,8 @@ def project_result(value: Any) -> dict[str, Any]:
             message = match.group(2).lower()
             if "duplicate record" in message:
                 code = "duplicate_record"
-            elif "unknown user" in message:
-                code = "unknown_user_id"
+            elif f"unknown {entity}" in message:
+                code = f"unknown_{entity}_id"
             elif "unable to create record" in message:
                 code = "create_validation_failed"
             elif "unable to update record" in message:
@@ -79,7 +81,7 @@ def project_result(value: Any) -> dict[str, Any]:
     projected["errors"] = safe_errors
     projected["error_count"] = len(errors)
     if result == "success" and errors:
-        raise RuntimeError("Zammad returned inconsistent user import errors")
+        raise RuntimeError(f"Zammad returned inconsistent {entity} import errors")
     return projected
 
 
