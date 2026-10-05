@@ -425,6 +425,7 @@ async def _request(
         "/object_manager_attributes_execute_migrations",
         "/tickets/selector",
         "/applications/token",
+        "/settings/ticket_agent_default_notifications/apply_to_all",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -482,6 +483,8 @@ async def _request(
         raise ValueError("OAuth application token issuance supports POST only")
     if time_accounting_report_path and method != "GET":
         raise ValueError("Time accounting reports support GET only")
+    if path == "/settings/ticket_agent_default_notifications/apply_to_all" and method != "POST":
+        raise ValueError("Applying ticket agent notification defaults supports POST only")
     return await _send_api_request(
         method, path, payload, params,
         files=files,
@@ -512,6 +515,70 @@ async def zammad_get_time_accounting_report(
     return _json(project_time_accounting_report(report, result))
 
 
+async def _ticket_agent_notification_setting_snapshot() -> Mapping[str, Any]:
+    settings = await _get("/settings")
+    if not isinstance(settings, list):
+        raise RuntimeError("Zammad did not return its settings list")
+    matches = [
+        item for item in settings
+        if isinstance(item, Mapping) and item.get("name") == "ticket_agent_default_notifications"
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("Zammad did not return exactly one ticket agent notification setting")
+    return matches[0]
+
+
+@mcp.tool()
+async def zammad_prepare_ticket_agent_notification_apply(
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview the asynchronous action that applies default notifications to all agents."""
+    global _PLAN_CLEANER
+    if not acknowledge_high_impact:
+        raise ValueError("This action affects every ticket agent; set acknowledge_high_impact=true to prepare it")
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    before = await _ticket_agent_notification_setting_snapshot()
+    setting_id = _validate_id(before.get("id"))
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__ticket_notification_reset__",
+        "operation": "apply_to_all",
+        "object_id": setting_id,
+        "data": {},
+        "fingerprint": _digest(before),
+        "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    safe_setting = _project_admin_settings(before)
+    state_current = safe_setting.get("state_current") if isinstance(safe_setting, Mapping) else None
+    matrix = state_current.get("value") if isinstance(state_current, Mapping) else None
+    return _json({
+        "plan_id": plan_id,
+        "resource": "ticket_agent_notifications",
+        "operation": "apply_to_all",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission.",
+        "before": safe_setting,
+        "after": {
+            "notification_matrix_applied_to_each_agent": matrix,
+            "target": "users with ticket.agent permission when the job runs",
+            "job": "ResetNotificationsPreferencesJob",
+            "asynchronous": True,
+        },
+        "approval_required": True,
+        "note": "No write was performed. Explicit user approval is required before apply. The target user set and setting value are read by the background job at execution time.",
+    })
+
+
 @mcp.tool()
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
@@ -528,6 +595,7 @@ async def zammad_list_admin_resources() -> str:
         "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
+        "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
     })
 
 
@@ -2593,6 +2661,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__oauth_application_token__":
             current = await _oauth_application_snapshot(plan["object_id"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__ticket_notification_reset__":
+            current = await _ticket_agent_notification_setting_snapshot()
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -2907,6 +2978,15 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "asynchronous_execution": True,
                 "deletion_details_returned": False,
             }
+        elif resource == "__ticket_notification_reset__":
+            queued = await _request("POST", "/settings/ticket_agent_default_notifications/apply_to_all")
+            result = {
+                "queued": isinstance(queued, Mapping) and queued.get("status") == "ok",
+                "asynchronous": True,
+                "job": "ResetNotificationsPreferencesJob",
+                "job_id_returned": False,
+                "agent_preferences_returned": False,
+            }
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:
@@ -2928,6 +3008,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__session_action__": "sessions",
         "__data_privacy_deletion__": "data_privacy_tasks",
         "__oauth_application_token__": "oauth_applications",
+        "__ticket_notification_reset__": "ticket_agent_notifications",
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
@@ -2939,6 +3020,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The deletion was queued for asynchronous Zammad processing. Its scope can change before execution; inspect the Data Privacy task status before retrying."
     elif resource == "__oauth_application_token__":
         response_note = "The token was issued for the current Zammad user and stored in the local secret store. Do not retry if delivery is uncertain; inspect application access first."
+    elif resource == "__ticket_notification_reset__":
+        response_note = "A background reset was queued. No job ID is returned. If the outcome is uncertain, inspect agent notification preferences before retrying."
     else:
         response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
     response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}

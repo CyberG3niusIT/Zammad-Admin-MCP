@@ -138,6 +138,7 @@ Supported workflows include:
 - Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
 - Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
 - Maintenance and Time Accounting settings use the staged Settings workflow; Time Accounting activity types support staged create/update, and monthly reports are available with bounded, privacy-projected results
+- `zammad_prepare_ticket_agent_notification_apply` stages asynchronous application of the current default matrix to every user with `ticket.agent` permission; the plan fingerprints that matrix, requires high-impact approval, and reports that Zammad returns no job ID
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 
