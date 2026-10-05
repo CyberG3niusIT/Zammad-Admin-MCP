@@ -8,9 +8,11 @@ import json
 import os
 import re
 import secrets
+import stat
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
@@ -52,7 +54,12 @@ _RESOURCES: dict[str, Resource] = {
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
     "users": Resource("/users", risk="Changes user identity, roles, and access; deleting a user can affect related records.", high_impact=True),
     "object_manager_attributes": Resource("/object_manager_attributes", operations=frozenset({"create", "update"}), risk="Schema changes can affect stored data and require a separate migration/restart workflow.", high_impact=True),
-    "user_access_tokens": Resource("/user_access_token", operations=frozenset({"delete"}), risk="Revokes an API token immediately and may lock out integrations.", high_impact=True),
+    "user_access_tokens": Resource(
+        "/user_access_token",
+        operations=frozenset({"create", "delete"}),
+        risk="Creates a one-time API secret or revokes a token; either action can lock out integrations.",
+        high_impact=True,
+    ),
     "email_channels": Resource(
         "/channels_email",
         operations=frozenset({"enable", "disable", "delete", "reassign"}),
@@ -175,6 +182,71 @@ def _validate_setting_secret_reference(data: Mapping[str, Any]) -> None:
             raise ValueError("Secret settings must use a secure environment reference, not an inline value")
 
 
+def _store_generated_token(token: str, metadata: Mapping[str, Any]) -> Path:
+    """Write a one-time token using directory-relative, no-follow file operations."""
+    raw_directory = os.environ.get("ZAMMAD_TOKEN_STORE_DIR", "").strip()
+    directory = Path(raw_directory).expanduser() if raw_directory else Path.home() / ".config" / "zammad-admin-mcp" / "tokens"
+    if not directory.is_absolute():
+        raise RuntimeError("Token store directory must be absolute")
+    directory = Path(os.path.abspath(directory))
+    project_root = Path(__file__).resolve().parents[1]
+    if directory == project_root or project_root in directory.parents:
+        raise RuntimeError("Token store must be outside the project directory")
+    root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    current_fd = root_fd
+    try:
+        parts = directory.parts[1:]
+        for index, part in enumerate(parts):
+            try:
+                os.mkdir(part, 0o700, dir_fd=current_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
+            if current_fd != root_fd:
+                os.close(current_fd)
+            current_fd = next_fd
+            if index == len(parts) - 1:
+                directory_info = os.fstat(current_fd)
+                if directory_info.st_uid != os.getuid() or stat.S_IMODE(directory_info.st_mode) != 0o700:
+                    raise RuntimeError("Token store directory must be owned by the MCP user with mode 0700")
+        if not parts:
+            raise RuntimeError("Token store directory must not be the filesystem root")
+        label = re.sub(r"[^A-Za-z0-9._-]+", "-", str(metadata.get("name", "token"))).strip("-._")[:32] or "token"
+        filename = f"{label}-{secrets.token_urlsafe(12)}.json"
+        descriptor = os.open(
+            filename,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=current_fd,
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump({**dict(metadata), "token": token}, output, ensure_ascii=False)
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            file_info = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
+            if not stat.S_ISREG(file_info.st_mode) or file_info.st_uid != os.getuid() or stat.S_IMODE(file_info.st_mode) != 0o600:
+                raise RuntimeError("Token file permissions are not owner-only")
+            os.fsync(current_fd)
+        except Exception:
+            try:
+                os.unlink(filename, dir_fd=current_fd)
+                os.fsync(current_fd)
+            except OSError:
+                pass
+            raise
+        return directory / filename
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and str(exc).startswith("Token store directory"):
+            raise
+        raise RuntimeError("Zammad created a token but secure local storage failed; inspect token metadata and revoke it if needed") from None
+    finally:
+        if current_fd != root_fd:
+            os.close(current_fd)
+        os.close(root_fd)
+
+
 def _json(value: Any) -> str:
     return json.dumps(_scrub(value), ensure_ascii=False, indent=2, sort_keys=True)
 
@@ -182,6 +254,51 @@ def _json(value: Any) -> str:
 def _digest(value: Any) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _snapshot_fingerprint(resource: str, value: Any) -> str:
+    # Token last_used_at/updated_at changes merely by reading the token endpoint.
+    # Fingerprint its permission catalog and existing IDs so ordinary MCP reads do not stale a plan.
+    if resource == "user_access_tokens" and isinstance(value, Mapping):
+        permissions = value.get("permissions", [])
+        tokens = value.get("tokens", [])
+        stable = {
+            "permissions": sorted(
+                (item.get("name"), item.get("active"))
+                for item in permissions if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+            ),
+            "token_ids": sorted(item.get("id") for item in tokens if isinstance(item, Mapping)),
+        }
+        return _digest(stable)
+    return _digest(value)
+
+
+def _validate_token_create_payload(data: Any, snapshot: Any) -> None:
+    if not isinstance(data, dict) or set(data) - {"name", "permission", "expires_at"}:
+        raise ValueError("Token creation accepts only name, permission, and optional expires_at")
+    name = data.get("name")
+    permissions = data.get("permission")
+    if not isinstance(name, str) or not name.strip() or len(name) > 100:
+        raise ValueError("Token name must be a non-empty string of at most 100 characters")
+    if not isinstance(permissions, list) or not permissions or any(not isinstance(item, str) for item in permissions):
+        raise ValueError("permission must be a non-empty array of permission names")
+    allowed = {
+        item["name"] for item in snapshot.get("permissions", [])
+        if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
+    } if isinstance(snapshot, Mapping) else set()
+    unknown = sorted(set(permissions) - allowed)
+    if unknown:
+        raise ValueError("Unknown or inactive token permissions: " + ", ".join(unknown))
+    if len(set(permissions)) != len(permissions):
+        raise ValueError("permission must not contain duplicates")
+    expiry = data.get("expires_at")
+    if expiry is not None:
+        if not isinstance(expiry, str):
+            raise ValueError("expires_at must be an ISO date (YYYY-MM-DD)")
+        try:
+            date.fromisoformat(expiry)
+        except ValueError as exc:
+            raise ValueError("expires_at must be a valid ISO date (YYYY-MM-DD)") from exc
 
 
 def _resource(resource: str) -> Resource:
@@ -575,12 +692,19 @@ async def zammad_prepare_admin_change(
             raise ValueError("create does not accept object_id")
         if operation in {"update", "delete"}:
             object_id = _validate_id(object_id)
+        if resource == "user_access_tokens" and operation == "create":
+            if object_id is not None:
+                raise ValueError("Token creation does not accept object_id")
+            if not isinstance(data, dict):
+                raise ValueError("Token creation requires name and permission fields")
     if spec.high_impact and not acknowledge_high_impact:
         raise ValueError("This change is high impact; inspect the resource risk and set acknowledge_high_impact=true to prepare it")
 
     data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
 
     before = await _snapshot(resource, operation, object_id)
+    if resource == "user_access_tokens" and operation == "create":
+        _validate_token_create_payload(data, before)
     dependencies: list[dict[str, str]] = []
     group_id = None
     if resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -634,7 +758,7 @@ async def zammad_prepare_admin_change(
     now = time.time()
     plan = {
         "resource": resource, "operation": operation, "object_id": object_id,
-        "data": data, "fingerprint": _digest(before), "before": before,
+        "data": data, "fingerprint": _snapshot_fingerprint(resource, before), "before": before,
         "dependencies": dependencies,
         "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": spec.high_impact,
     }
@@ -676,7 +800,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
     async with _WRITE_LOCK:
         snapshot_path = plan.get("snapshot_path")
         current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
-        if _digest(current) != plan["fingerprint"]:
+        if _snapshot_fingerprint(plan["resource"], current) != plan["fingerprint"]:
             raise RuntimeError("The resource changed after preview; prepare a new plan")
         for dependency in plan.get("dependencies", []):
             dependency_current = await _get(dependency["path"])
@@ -701,6 +825,21 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 result = await _request("POST", f"{_EMAIL_CHANNEL_GROUP_PATH}/{channel_id}", data)
             else:
                 raise ValueError("Unsupported email channel operation")
+        elif resource == "user_access_tokens" and operation == "create":
+            token_response = await _request("POST", "/user_access_token", data)
+            token_value = token_response.get("token") if isinstance(token_response, Mapping) else None
+            if not isinstance(token_value, str) or not token_value:
+                raise RuntimeError("Zammad accepted token creation without returning a retrievable token; inspect token metadata and revoke if needed")
+            metadata = {key: data[key] for key in ("name", "permission", "expires_at") if key in data}
+            stored_path = _store_generated_token(token_value, metadata)
+            result = {
+                "name": data["name"],
+                "permission": data["permission"],
+                "expires_at": data.get("expires_at"),
+                "secret_file": str(stored_path),
+                "file_mode": "0600",
+                "token_value_returned": False,
+            }
         elif resource == "__knowledge_base_settings__":
             result = await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
         elif resource == "__knowledge_base_record__":

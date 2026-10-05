@@ -178,7 +178,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - fully verified system settings or mailbox writes: reads and previews work, but no apply was performed
-- API token creation: Zammad returns a generated token only once, and this MCP has no secure one-time delivery surface; metadata read and staged revocation are available
+- API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
 - unrestricted object manager migrations
 
