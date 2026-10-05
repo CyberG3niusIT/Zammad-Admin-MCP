@@ -280,7 +280,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The source includes monitoring tools, but the MCP server currently connected to this workspace does not expose them; its resource listing rejects `monitoring`, so that implementation is not yet available through the live tool registry.
+- After the authorized App Server restart on 2026-10-05, the live registry advertised 71 API-backed resource kinds; Knowledge Base discovery and sanitized HTTP log metadata were invoked successfully.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
