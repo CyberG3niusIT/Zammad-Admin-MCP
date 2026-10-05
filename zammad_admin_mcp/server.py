@@ -45,6 +45,11 @@ from zammad_admin_mcp.admin_schemas.ldap_sources import validate_payload as vali
 from zammad_admin_mcp.admin_schemas.postmaster_filters import validate_payload as validate_postmaster_filter_payload
 from zammad_admin_mcp.admin_schemas.public_links import validate_payload as validate_public_link_payload
 from zammad_admin_mcp.admin_schemas.product_logo import validate_payload as validate_product_logo_payload
+from zammad_admin_mcp.admin_schemas.packages import project_inventory as project_package_inventory
+from zammad_admin_mcp.admin_schemas.packages import validate_install_payload as validate_package_install_payload
+from zammad_admin_mcp.admin_schemas.ssl_certificates import project_certificate as project_ssl_certificate
+from zammad_admin_mcp.admin_schemas.ssl_certificates import project_collection as project_ssl_certificate_collection
+from zammad_admin_mcp.admin_schemas.ssl_certificates import validate_payload as validate_ssl_certificate_payload
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -132,6 +137,22 @@ _RESOURCES: dict[str, Resource] = {
     "ldap_sources": Resource("/ldap_sources", risk="LDAP settings affect authentication and user synchronization; bind passwords are set only from process environment references.", high_impact=True),
     "chats": Resource("/chats", risk="Chat configuration changes availability; deletion also removes chat sessions.", high_impact=True),
     "external_credentials": Resource("/external_credentials", risk="Replaces connected provider settings or secrets and may affect external integrations.", high_impact=True),
+    "translations": Resource(
+        "/translations/customized", operations=frozenset({"upsert", "reset", "delete"}),
+        risk="Changes translated text displayed throughout Zammad for a locale.", high_impact=True, item=False,
+    ),
+    "ssl_certificates": Resource(
+        "/ssl_certificates", operations=frozenset({"create", "delete"}),
+        risk="Changes certificates trusted by Zammad integrations; removing a certificate can break TLS connections.", high_impact=True, item=False,
+    ),
+    "monitoring": Resource(
+        "/monitoring/health_check", operations=frozenset({"rotate_token", "restart_failed_jobs"}),
+        risk="Rotates the external monitoring credential or reactivates failed scheduler jobs.", high_impact=True, item=False,
+    ),
+    "packages": Resource(
+        "/packages", operations=frozenset({"install", "uninstall"}),
+        risk="Package installation writes executable application files; removal reverses package migrations and removes files.", high_impact=True, item=False,
+    ),
 }
 
 _SPECIAL_CHANNEL = "email_notification"
@@ -303,7 +324,14 @@ def _resource(resource: str) -> Resource:
         raise ValueError("Unsupported Zammad admin resource") from exc
 
 
-async def _request(method: str, path: str, payload: Any = None, params: dict[str, Any] | None = None) -> Any:
+async def _request(
+    method: str,
+    path: str,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    files: dict[str, tuple[str, bytes, str]] | None = None,
+    accept_package_redirect: bool = False,
+) -> Any:
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
@@ -315,6 +343,7 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
         "/channels/admin/whatsapp/preload",
         "/integration/ldap/discover", "/integration/ldap/bind",
         "/integration/ldap/job_try", "/integration/ldap/job_start",
+        "/monitoring/health_check", "/monitoring/token", "/monitoring/restart_failed_jobs",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -339,13 +368,30 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
+    translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
+    translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
+    translation_reset_path = bool(re.fullmatch(r"/translations/reset/\d+", path))
+    translation_upsert_path = path == "/translations/upsert"
     settings_image_path = bool(re.fullmatch(r"/settings/image/\d+", path))
     settings_reset_path = bool(re.fullmatch(r"/settings/reset/\d+", path))
-    if path not in allowed and not email_group_path and not whatsapp_action_path and not microsoft365_group_path and not microsoft_graph_action_path and not microsoft_graph_group_path and not microsoft365_verify_path and not microsoft_graph_verify_path and not microsoft365_inbound_path and not microsoft_graph_inbound_path and not google_action_path and not google_group_path and not google_verify_path and not google_inbound_path and not settings_image_path and not settings_reset_path and not item_path and not knowledge_base_path and not knowledge_base_settings_path:
+    fixed_special_paths = (
+        email_group_path, whatsapp_action_path, microsoft365_group_path,
+        microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
+        microsoft_graph_verify_path, microsoft365_inbound_path, microsoft_graph_inbound_path,
+        google_action_path, google_group_path, google_verify_path, google_inbound_path,
+        settings_image_path, settings_reset_path, item_path, knowledge_base_path,
+        knowledge_base_settings_path, translation_search_path, translation_item_path,
+        translation_reset_path, translation_upsert_path,
+    )
+    if path not in allowed and not any(fixed_special_paths):
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
-    return await _send_api_request(method, path, payload, params)
+    return await _send_api_request(
+        method, path, payload, params,
+        files=files,
+        accept_package_redirect=accept_package_redirect,
+    )
 
 
 async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
@@ -400,6 +446,12 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if resource == "product_logo":
         settings = _project_settings(await _get("/settings"))
         return _json([item for item in settings if isinstance(item, Mapping) and item.get("name") == "product_logo"] if isinstance(settings, list) else [])
+    if resource == "ssl_certificates":
+        return _json(project_ssl_certificate_collection(await _get("/ssl_certificates")))
+    if resource == "monitoring":
+        return await zammad_get_monitoring_health()
+    if resource == "packages":
+        return _json(await _package_inventory_snapshot())
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
@@ -407,6 +459,20 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         if area is not None:
             result = [item for item in result if isinstance(item, Mapping) and item.get("area") == area] if isinstance(result, list) else []
     return _json(result)
+
+
+async def _ssl_certificate_snapshot(certificate_id: int | None = None) -> Any:
+    certificates = project_ssl_certificate_collection(await _get("/ssl_certificates"))
+    if certificate_id is None:
+        return sorted(certificates, key=lambda item: item.get("id", 0))
+    matches = [item for item in certificates if item.get("id") == certificate_id]
+    if len(matches) > 1:
+        raise RuntimeError("Zammad returned duplicate SSL certificate IDs")
+    return matches[0] if matches else None
+
+
+async def _package_inventory_snapshot() -> dict[str, Any]:
+    return project_package_inventory(await _get("/packages"))
 
 
 def _register_legacy_list_tool(resource: str) -> None:
@@ -594,6 +660,492 @@ async def zammad_get_knowledge_base(knowledge_base_id: int) -> str:
 async def zammad_get_knowledge_base_permissions(knowledge_base_id: int) -> str:
     """Read the role permissions configured for one Knowledge Base."""
     return _json(await _get(f"/knowledge_bases/{_validate_id(knowledge_base_id)}/permissions"))
+
+
+def _validate_translation_locale(locale: str) -> str:
+    if not isinstance(locale, str) or not re.fullmatch(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale):
+        raise ValueError("locale must be a locale code such as de-de or en-us")
+    return locale.lower()
+
+
+async def _translation_upsert_snapshot(locale: str, source: str) -> Mapping[str, Any] | None:
+    customized = await _get("/translations/customized")
+    if not isinstance(customized, list) or any(not isinstance(item, Mapping) for item in customized):
+        raise RuntimeError("Zammad did not return customized translations")
+    customized_matches = [
+        item for item in customized
+        if item.get("locale") == locale and item.get("source") == source
+    ]
+    if len(customized_matches) > 1:
+        raise RuntimeError("Zammad returned duplicate customized translations")
+    if customized_matches:
+        return customized_matches[0]
+
+    response = await _get(f"/translations/search/{locale}", {"query": source})
+    items = response.get("items") if isinstance(response, Mapping) else None
+    total_count = response.get("total_count") if isinstance(response, Mapping) else None
+    if not isinstance(items, list) or any(not isinstance(item, Mapping) for item in items):
+        raise RuntimeError("Zammad did not return translation search results")
+    if isinstance(total_count, bool) or not isinstance(total_count, int) or total_count < len(items):
+        raise RuntimeError("Zammad returned an invalid translation search count")
+    matches = [
+        item for item in items
+        if item.get("source") == source and isinstance(item.get("id"), int) and not isinstance(item.get("id"), bool)
+    ]
+    if len(matches) > 1:
+        raise RuntimeError("Zammad returned duplicate exact translation sources")
+    if not matches and isinstance(total_count, int) and total_count > len(items):
+        raise RuntimeError("The translation search results were truncated; narrow the source text and prepare again")
+    return matches[0] if matches else None
+
+
+@mcp.tool()
+async def zammad_list_customized_translations() -> str:
+    """List custom or changed translation entries from Zammad."""
+    return _json(await _get("/translations/customized"))
+
+
+@mcp.tool()
+async def zammad_search_translation_suggestions(locale: str, query: str) -> str:
+    """Search system and custom translation suggestions for one locale."""
+    locale = _validate_translation_locale(locale)
+    if not isinstance(query, str):
+        raise ValueError("query must be a string")
+    return _json(await _get(f"/translations/search/{locale}", {"query": query}))
+
+
+async def _monitoring_health_snapshot() -> Mapping[str, Any]:
+    health = await _get("/monitoring/health_check")
+    if not isinstance(health, Mapping) or not isinstance(health.get("issues"), list):
+        raise RuntimeError("Zammad did not return a monitoring health snapshot")
+    failed_issues = sorted(
+        issue for issue in health["issues"]
+        if isinstance(issue, str) and issue.startswith("Failed to run scheduled job '")
+    )
+    return {
+        "healthy": health.get("healthy") is True,
+        "issue_count": len(health["issues"]),
+        "failed_job_count": len(failed_issues),
+        "failed_jobs_fingerprint": _digest(failed_issues),
+    }
+
+
+async def _monitoring_token_setting_snapshot() -> Mapping[str, Any]:
+    settings = _project_settings(await _get("/settings"))
+    candidates = [item for item in settings if isinstance(item, Mapping) and item.get("name") == "monitoring_token"] if isinstance(settings, list) else []
+    if len(candidates) != 1:
+        raise RuntimeError("The monitoring token setting is missing or ambiguous")
+    state = candidates[0].get("state_current")
+    if not isinstance(state, Mapping):
+        raise RuntimeError("Zammad did not return monitoring token state metadata")
+    return {
+        "id": candidates[0].get("id"),
+        "name": "monitoring_token",
+        "configured": state.get("value_configured") is True,
+    }
+
+
+@mcp.tool()
+async def zammad_get_monitoring_health() -> str:
+    """Read a redacted monitoring summary without returning the monitoring token or issue details."""
+    health = await _monitoring_health_snapshot()
+    return _json({
+        "healthy": health["healthy"],
+        "issue_count": health["issue_count"],
+        "failed_job_count": health["failed_job_count"],
+        "can_restart_failed_jobs": health["failed_job_count"] > 0,
+        "issue_details_returned": False,
+        "monitoring_token_returned": False,
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_monitoring_action(
+    operation: Literal["rotate_token", "restart_failed_jobs"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a monitoring token rotation or failed-job restart."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Monitoring actions require acknowledge_high_impact=true")
+
+    if operation == "rotate_token":
+        before = await _monitoring_token_setting_snapshot()
+        after = {"token_rotated": True, "token_value_returned": False, "secure_storage": "owner-only local file"}
+    else:
+        before = await _monitoring_health_snapshot()
+        if before["failed_job_count"] == 0:
+            raise ValueError("There are no failed monitoring jobs to restart")
+        after = {"failed_jobs_reactivated": before["failed_job_count"]}
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__monitoring_action__", "operation": operation,
+        "object_id": None, "data": {}, "fingerprint": _digest(before),
+        "before": before, "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    risk = (
+        "Replaces the monitoring token used by external health checks; current consumers must be updated."
+        if operation == "rotate_token"
+        else "Reactivates every failed scheduler job so Zammad may retry it."
+    )
+    return _json({
+        "plan_id": plan_id, "resource": "monitoring", "operation": operation,
+        "expires_in_seconds": _PLAN_TTL_SECONDS, "snapshot_fingerprint": plan["fingerprint"],
+        "risk": risk, "before": before, "after": after,
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+def _package_post_install_commands(inventory: Mapping[str, Any]) -> list[str]:
+    commands: list[str] = []
+    if inventory.get("package_installation") is True:
+        if inventory.get("local_gemfiles") is True:
+            commands.extend([
+                "zammad config:set BUNDLE_DEPLOYMENT=0",
+                "zammad run bundle config set --local deployment false",
+                "zammad run bundle install",
+            ])
+        commands.append("zammad run rake zammad:package:post_install")
+    else:
+        if inventory.get("local_gemfiles") is True:
+            commands.append("bundle install")
+        commands.append("rake zammad:package:post_install")
+    commands.append("systemctl restart zammad")
+    return commands
+
+
+@mcp.tool()
+async def zammad_prepare_package_change(
+    operation: Literal["install", "uninstall"],
+    package_data: dict[str, Any] | None = None,
+    package_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a Zammad package install or removal; install can write executable application code."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Package changes require acknowledge_high_impact=true")
+
+    inventory = await _package_inventory_snapshot()
+    if operation == "install":
+        if package_id is not None or not isinstance(package_data, dict):
+            raise ValueError("install requires package_data and does not accept package_id")
+        prepared, package_preview = validate_package_install_payload(package_data)
+        existing = [item for item in inventory["packages"] if item.get("name") == package_preview["name"]]
+        if any(item.get("version") == package_preview["version"] for item in existing):
+            raise ValueError("This package name and version are already present")
+        before = inventory
+        before_preview: Any = existing
+        after_preview = {
+            **package_preview,
+            "replaces_existing_package": bool(existing),
+            "application_code_write": True,
+            "requires_follow_up": _package_post_install_commands(inventory),
+        }
+        data = {"package_data": prepared}
+        object_id = None
+    else:
+        if package_data is not None or package_id is None:
+            raise ValueError("uninstall requires package_id and does not accept package_data")
+        object_id = _validate_id(package_id)
+        matches = [item for item in inventory["packages"] if item.get("id") == object_id]
+        if len(matches) != 1:
+            raise ValueError("package_id must identify exactly one installed Zammad package")
+        selected = matches[0]
+        if selected.get("state") not in {"installed", "deactivate"}:
+            raise ValueError("Only installed packages can be removed")
+        before = inventory
+        before_preview = selected
+        after_preview = {
+            "removed": True,
+            "package_name": selected.get("name"),
+            "reverse_migrations": True,
+            "package_files_removed": True,
+            "package_data_rollback_available": False,
+            "requires_follow_up": _package_post_install_commands(inventory),
+        }
+        data = {}
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__package_change__", "operation": operation,
+        "object_id": object_id, "data": data,
+        "preview_after": after_preview,
+        "fingerprint": _digest(before), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    risk = (
+        "Installs a trusted package that writes files into the Zammad application and can execute arbitrary code in its context. Follow-up dependency/migration commands and a service restart are required."
+        if operation == "install"
+        else "Uninstalls a package, reverses its database migrations, and removes its files without a package-data rollback. Follow-up package commands and a service restart are required."
+    )
+    return _json({
+        "plan_id": plan_id, "resource": "packages", "operation": operation,
+        "object_id": object_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"], "risk": risk,
+        "before": before_preview, "after": after_preview,
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval. Follow-up commands are shown but will not be run by the MCP.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_ssl_certificate_change(
+    operation: Literal["create", "delete"],
+    certificate: str | None = None,
+    certificate_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview an SSL certificate import or removal without writing to Zammad."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("SSL certificate changes require acknowledge_high_impact=true")
+
+    if operation == "create":
+        if certificate_id is not None:
+            raise ValueError("certificate import does not accept certificate_id")
+        data, after = validate_ssl_certificate_payload({"certificate": certificate})
+        before = await _ssl_certificate_snapshot()
+        if any(item.get("fingerprint") == after["sha1_fingerprint"] for item in before):
+            raise ValueError("This SSL certificate is already present")
+        object_id = None
+        preview_before = before
+        preview_after = after
+    else:
+        if certificate is not None or certificate_id is None:
+            raise ValueError("certificate removal requires certificate_id and does not accept certificate data")
+        object_id = _validate_id(certificate_id)
+        before = await _ssl_certificate_snapshot(object_id)
+        if not isinstance(before, Mapping):
+            raise ValueError("certificate_id must identify an existing trusted certificate")
+        data = {}
+        preview_before = before
+        preview_after = None
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__ssl_certificates__", "operation": operation,
+        "object_id": object_id, "data": data,
+        "fingerprint": _digest(before), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    return _json({
+        "plan_id": plan_id, "resource": "ssl_certificates", "operation": operation,
+        "object_id": object_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes the certificates trusted by Zammad integrations. Removing a certificate may break TLS connections; Zammad validates certificate suitability when importing.",
+        "before": preview_before, "after": preview_after,
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_translation_change(
+    operation: Literal["upsert", "reset", "delete"],
+    data: dict[str, str] | None = None,
+    translation_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a translation change; apply requires a separate explicit approval."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Translation changes require acknowledge_high_impact=true")
+
+    if operation == "upsert":
+        if translation_id is not None or not isinstance(data, dict) or set(data) != {"locale", "source", "target"}:
+            raise ValueError("upsert requires exactly locale, source, and target and does not accept translation_id")
+        locale = _validate_translation_locale(data["locale"])
+        source = data["source"]
+        target = data["target"]
+        if not isinstance(source, str) or not source.strip() or not isinstance(target, str) or not target.strip():
+            raise ValueError("source and target must be non-empty strings")
+        data = {"locale": locale, "source": source, "target": target}
+        before = await _translation_upsert_snapshot(locale, source)
+        preview_before = before
+        preview_after = {
+            "id": before.get("id") if isinstance(before, Mapping) else None,
+            "locale": locale,
+            "source": source,
+            "target": target,
+            "action": "update existing entry" if isinstance(before, Mapping) else "create or set entry",
+        }
+    else:
+        if data not in (None, {}) or translation_id is None:
+            raise ValueError(f"{operation} requires translation_id and does not accept data")
+        translation_id = _validate_id(translation_id)
+        before = await _get(f"/translations/{translation_id}")
+        if not isinstance(before, Mapping):
+            raise RuntimeError("Zammad did not return the translation snapshot")
+        synchronized = before.get("is_synchronized_from_codebase")
+        if operation == "delete" and synchronized is not False:
+            raise ValueError("Only custom translations can be deleted")
+        if operation == "reset" and synchronized is not True:
+            raise ValueError("Only codebase translations can be reset")
+        data = {}
+        preview_before = {
+            key: before.get(key)
+            for key in ("id", "locale", "source", "target", "target_initial", "is_synchronized_from_codebase")
+            if key in before
+        }
+        preview_after = (
+            {**preview_before, "target": before.get("target_initial")}
+            if operation == "reset" else None
+        )
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__translation_change__", "operation": operation,
+        "object_id": translation_id, "data": data,
+        "snapshot_path": None,
+        "translation_locale": data.get("locale") if operation == "upsert" else None,
+        "translation_source": data.get("source") if operation == "upsert" else None,
+        "fingerprint": _digest(before), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    return _json({
+        "plan_id": plan_id, "resource": "translations", "operation": operation,
+        "object_id": translation_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes user-visible translated text in Zammad for the selected locale.",
+        "before": preview_before, "after": preview_after,
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_permissions_change(
+    knowledge_base_id: int,
+    permissions: dict[str, str],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a full Knowledge Base role-access change; this tool never writes."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base access changes require acknowledge_high_impact=true")
+    if not isinstance(permissions, dict) or not permissions:
+        raise ValueError("permissions must map every eligible role ID to editor, reader, or none")
+
+    normalized: dict[str, str] = {}
+    for role_id, access in permissions.items():
+        if not isinstance(role_id, str) or not role_id.isdigit() or int(role_id) <= 0:
+            raise ValueError("permission keys must be positive role IDs encoded as strings")
+        if not isinstance(access, str) or access not in {"editor", "reader", "none"}:
+            raise ValueError("permission values must be editor, reader, or none")
+        normalized_role_id = str(int(role_id))
+        if normalized_role_id in normalized:
+            raise ValueError("permission keys must not repeat a role ID")
+        normalized[normalized_role_id] = access
+
+    before = await _get(f"/knowledge_bases/{kb_id}/permissions")
+    if not isinstance(before, Mapping):
+        raise RuntimeError("Zammad did not return the Knowledge Base permission snapshot")
+    roles_editor = before.get("roles_editor")
+    roles_reader = before.get("roles_reader")
+    if not isinstance(roles_editor, list) or not isinstance(roles_reader, list):
+        raise RuntimeError("Zammad did not return eligible Knowledge Base roles")
+
+    role_access: dict[str, tuple[str, str]] = {}
+    eligible_roles = [(role, "editor") for role in roles_editor]
+    eligible_roles.extend((role, "reader") for role in roles_reader)
+    for role, default_access in eligible_roles:
+        if not isinstance(role, Mapping) or isinstance(role.get("id"), bool) or not isinstance(role.get("id"), int) or not isinstance(role.get("name"), str):
+            raise RuntimeError("Zammad returned an invalid Knowledge Base role")
+        role_key = str(role["id"])
+        if role_key in role_access:
+            raise RuntimeError("Zammad returned a duplicate Knowledge Base role")
+        role_access[role_key] = (role["name"], default_access)
+    if set(normalized) != set(role_access):
+        raise ValueError("permissions must include exactly every role currently eligible for Knowledge Base access")
+
+    explicit = {
+        str(item.get("role_id")): item.get("access")
+        for item in before.get("permissions", [])
+        if isinstance(item, Mapping) and item.get("role_id") is not None
+    } if isinstance(before.get("permissions"), list) else {}
+    before_access: dict[str, str] = {}
+    after_access: dict[str, str] = {}
+    for role_id, (name, default_access) in role_access.items():
+        current_access = explicit.get(role_id, default_access)
+        requested_access = normalized[role_id]
+        allowed = {"editor", "reader", "none"} if default_access == "editor" else {"reader", "none"}
+        if current_access not in allowed or requested_access not in allowed:
+            raise ValueError(f"Role {name!r} has an access level that is invalid for its current permissions")
+        before_access[role_id] = current_access
+        after_access[role_id] = requested_access
+
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_permissions__", "operation": "update", "object_id": kb_id,
+        "data": {"permissions_dialog": {"permissions": normalized}},
+        "snapshot_path": f"/knowledge_bases/{kb_id}/permissions",
+        "fingerprint": _digest(before), "before": before,
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    def entries(access_map: Mapping[str, str]) -> list[dict[str, Any]]:
+        return [
+            {"role_id": int(role_id), "role": role_access[role_id][0], "access": access_map[role_id]}
+            for role_id in sorted(role_access, key=int)
+        ]
+
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_permissions", "operation": "update",
+        "object_id": kb_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Changes which roles can read or edit public Knowledge Base content; Zammad prevents the acting user from removing their own editor access.",
+        "before": entries(before_access), "after": entries(after_access),
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -974,6 +1526,14 @@ async def zammad_prepare_admin_change(
     if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
         _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
 
+    if resource == "translations":
+        raise ValueError("Use zammad_prepare_translation_change for translation writes")
+    if resource == "ssl_certificates":
+        raise ValueError("Use zammad_prepare_ssl_certificate_change for certificate writes")
+    if resource == "monitoring":
+        raise ValueError("Use zammad_prepare_monitoring_action for monitoring changes")
+    if resource == "packages":
+        raise ValueError("Use zammad_prepare_package_change for package changes")
     if resource == _SPECIAL_CHANNEL:
         if operation != "configure":
             raise ValueError("email_notification supports only the configure operation")
@@ -1491,6 +2051,27 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__ldap_import_action__":
             current = await _ldap_sources_snapshot()
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__translation_change__":
+            if plan["operation"] == "upsert":
+                current = await _translation_upsert_snapshot(plan["translation_locale"], plan["translation_source"])
+            else:
+                current = await _get(f"/translations/{_validate_id(plan['object_id'])}")
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__ssl_certificates__":
+            current = await _ssl_certificate_snapshot(
+                plan["object_id"] if plan["operation"] == "delete" else None
+            )
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__monitoring_action__":
+            current = (
+                await _monitoring_token_setting_snapshot()
+                if plan["operation"] == "rotate_token"
+                else await _monitoring_health_snapshot()
+            )
+            current_fingerprint = _digest(current)
+        elif plan["resource"] == "__package_change__":
+            current = await _package_inventory_snapshot()
+            current_fingerprint = _digest(current)
         else:
             current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
             current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
@@ -1658,6 +2239,81 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             }
         elif resource == "__knowledge_base_settings__":
             result = await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
+        elif resource == "__knowledge_base_permissions__":
+            result = await _request("PATCH", f"/knowledge_bases/{plan['object_id']}/permissions", data)
+            result = {"updated": isinstance(result, Mapping), "permission_details_returned": False}
+        elif resource == "__translation_change__":
+            if operation == "upsert":
+                await _request("POST", "/translations/upsert", data)
+            elif operation == "reset":
+                await _request("PUT", f"/translations/reset/{plan['object_id']}")
+            elif operation == "delete":
+                await _request("DELETE", f"/translations/{plan['object_id']}")
+            else:
+                raise ValueError("Unsupported translation operation")
+            result = {"updated": True, "translation_content_returned": False}
+        elif resource == "__ssl_certificates__":
+            if operation == "create":
+                created = await _request("POST", "/ssl_certificates", data)
+                result = {"created": True, "certificate": project_ssl_certificate(created)}
+            elif operation == "delete":
+                await _request("DELETE", f"/ssl_certificates/{_validate_id(plan['object_id'])}")
+                result = {"deleted": True, "certificate_id": plan["object_id"]}
+            else:
+                raise ValueError("Unsupported SSL certificate operation")
+        elif resource == "__monitoring_action__":
+            if operation == "rotate_token":
+                token_response = await _request("POST", "/monitoring/token")
+                token_value = token_response.get("token") if isinstance(token_response, Mapping) else None
+                if not isinstance(token_value, str) or not token_value:
+                    raise RuntimeError("Zammad rotated the monitoring token without returning a retrievable token")
+                try:
+                    stored_path = _store_generated_token(
+                        token_value,
+                        {"name": "zammad-monitoring-token", "purpose": "zammad-monitoring"},
+                    )
+                except RuntimeError:
+                    raise RuntimeError(
+                        "Zammad rotated the monitoring token but secure local storage failed; fix the token store, then prepare and approve another rotation"
+                    ) from None
+                result = {
+                    "token_rotated": True,
+                    "secret_file": str(stored_path),
+                    "file_mode": "0600",
+                    "token_value_returned": False,
+                }
+            elif operation == "restart_failed_jobs":
+                await _request("POST", "/monitoring/restart_failed_jobs")
+                result = {"restarted": True, "failed_job_count": plan["before"]["failed_job_count"]}
+            else:
+                raise ValueError("Unsupported monitoring operation")
+        elif resource == "__package_change__":
+            if operation == "install":
+                package = data["package_data"]
+                package_json = json.dumps(package, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                filename = f"{package['name']}-{package['version']}.zpm"
+                await _request(
+                    "POST", "/packages",
+                    files={"file_upload": (filename, package_json, "application/json")},
+                    accept_package_redirect=True,
+                )
+                result = {
+                    "installed": True,
+                    "name": package["name"],
+                    "version": package["version"],
+                    "package_sha256": plan["preview_after"]["package_sha256"],
+                    "package_data_returned": False,
+                    "required_follow_up": plan["preview_after"]["requires_follow_up"],
+                }
+            elif operation == "uninstall":
+                await _request("DELETE", "/packages", {"id": _validate_id(plan["object_id"])})
+                result = {
+                    "removed": True,
+                    "package_id": plan["object_id"],
+                    "required_follow_up": plan["preview_after"]["requires_follow_up"],
+                }
+            else:
+                raise ValueError("Unsupported package operation")
         elif resource == "__knowledge_base_record__":
             result = await _request(plan["write_method"], plan["write_path"], data)
         else:

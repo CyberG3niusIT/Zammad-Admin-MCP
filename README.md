@@ -126,6 +126,10 @@ Supported workflows include:
 - Google and Microsoft 365 channels with a stored migration backup can be rolled back through a staged plan that previews restored metadata without showing the saved configuration
 - Web channel settings can be listed by Zammad area (for example `CustomerWeb::Base`) and changed through the staged settings workflow
 - Product-logo updates use a staged upload with image type and size validation; previews and apply responses omit image data
+- Knowledge Base role access changes use a complete per-role preview, validate against Zammad's eligible roles, and are rejected if the permissions changed after preview
+- Translation administration can list customized entries, search suggestions, stage upserts, reset system translations, and delete custom translations
+- SSL certificate management can list metadata and stage single-PEM imports or certificate removal; previews never return certificate bodies
+- Package management can list installed packages and stage install/removal plans; install payloads are size-limited and summarized without returning package file contents
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 
@@ -147,6 +151,28 @@ Knowledge base:
 - `zammad_get_knowledge_base`
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_record`
+- `zammad_prepare_knowledge_base_permissions_change`
+
+Translations:
+
+- `zammad_list_customized_translations`
+- `zammad_search_translation_suggestions`
+- `zammad_prepare_translation_change`
+
+SSL certificates:
+
+- `zammad_prepare_ssl_certificate_change`
+
+Monitoring:
+
+- `zammad_get_monitoring_health`
+- `zammad_prepare_monitoring_action`
+
+Packages:
+
+- `zammad_prepare_package_change`
+
+Package operations can write executable code or reverse database migrations. Review the package source and the full preview before approval. The MCP does not run the listed dependency, migration, or service restart follow-up commands.
 
 Compatibility readers:
 
@@ -161,6 +187,8 @@ Compatibility readers:
 
 # Installation
 
+The endpoint and payload checks documented in this repository were performed against Zammad `7.1.2-bbc6460a.docker`. Other Zammad versions may expose different endpoints or validation rules; check the reported server version before using write workflows.
+
 ```bash
 git clone https://github.com/CyberG3niusIT/Zammad-Admin-MCP.git
 cd Zammad-Admin-MCP
@@ -172,7 +200,32 @@ pip install -e .
 zammad-admin-mcp
 ```
 
-Configure the MCP client with the absolute path to the executable.
+The server uses MCP stdio transport. Configure your MCP client to launch the virtual-environment executable and pass the Zammad connection values in the process environment. For clients with a `mcpServers` JSON configuration, the entry has this shape:
+
+```json
+{
+  "mcpServers": {
+    "zammad-admin": {
+      "command": "/absolute/path/to/Zammad-Admin-MCP/.venv/bin/zammad-admin-mcp",
+      "env": {
+        "ZAMMAD_URL": "https://zammad.example.net",
+        "ZAMMAD_HTTP_TOKEN": "replace-with-a-Zammad-API-token"
+      }
+    }
+  }
+}
+```
+
+Use the configuration format and restart procedure required by your MCP client. Keep this local configuration private because it contains an API token. Use a dedicated Zammad token with only the permissions needed for the intended administration tasks.
+
+## First connection
+
+1. Call `zammad_server_version` and confirm the connected instance and version.
+2. Call `zammad_list_admin_resources` to see the resource families exposed by this build.
+3. Read the relevant resource before preparing a change. Review the complete preview and its risk text before asking the MCP client to approve an apply call.
+4. For high-impact operations, inspect the side effects in `ADMIN_COVERAGE.md`. Email verification can send a real message and begin fetching mail; channel probes can access a mailbox; SMS tests can send a real message.
+
+The MCP server separates preview from apply, but the client remains responsible for presenting and enforcing human approval. A plan identifier by itself is not proof of user consent.
 
 Store credentials only through environment variables or ignored local configuration. Never put secret literals in tool arguments. For secret fields, pass an environment reference such as `{"$secret_env":"ZAMMAD_SECRET_IMAP_PASSWORD"}`; values must be available to the MCP process and are redacted from previews. Reference names must start with `ZAMMAD_SECRET_` or `MCP_SECRET_`.
 
@@ -184,7 +237,9 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 
 Currently outside the generic workflow:
 
-- fully verified system settings or mailbox writes: reads and previews work, but no apply was performed
+- verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
+- The source includes monitoring tools, but the MCP server currently connected to this workspace does not expose them; its resource listing rejects `monitoring`, so that implementation is not yet available through the live tool registry.
+- Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
 - unrestricted object manager migrations

@@ -33,13 +33,43 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Token token={token}", "Accept": "application/json"}
 
 
-async def request(method: str, path: str, payload: Any = None, params: dict[str, Any] | None = None) -> Any:
+async def request(
+    method: str,
+    path: str,
+    payload: Any = None,
+    params: dict[str, Any] | None = None,
+    files: dict[str, tuple[str, bytes, str]] | None = None,
+    accept_package_redirect: bool = False,
+) -> Any:
+    if files is not None and (method, path) != ("POST", "/packages"):
+        raise ValueError("Multipart upload is only supported for package installation")
+    if accept_package_redirect and (method, path) != ("POST", "/packages"):
+        raise ValueError("Redirect acceptance is only supported for package installation")
+    headers = _headers()
+    if files is None:
+        headers["Content-Type"] = "application/json"
     async with httpx.AsyncClient(
-        base_url=_api_root(), headers={**_headers(), "Content-Type": "application/json"},
+        base_url=_api_root(), headers=headers,
         timeout=httpx.Timeout(30.0), follow_redirects=False,
     ) as client:
-        response = await client.request(method, path.lstrip("/"), json=payload, params=params)
+        request_options: dict[str, Any] = {"params": params}
+        if files is None:
+            request_options["json"] = payload
+        else:
+            request_options["files"] = files
+        response = await client.request(method, path.lstrip("/"), **request_options)
     if response.is_redirect:
+        redirect = urlsplit(response.headers.get("location", ""))
+        if (
+            accept_package_redirect
+            and response.status_code in {302, 303}
+            and not redirect.scheme
+            and not redirect.netloc
+            and redirect.path == "/"
+            and redirect.query == ""
+            and redirect.fragment == "system/package"
+        ):
+            return {"package_redirect_accepted": True}
         raise RuntimeError("Zammad redirected an API request; check ZAMMAD_URL")
     if response.status_code >= 400:
         raise RuntimeError(f"Zammad API request failed with HTTP {response.status_code}; check endpoint, payload, and token permissions")
