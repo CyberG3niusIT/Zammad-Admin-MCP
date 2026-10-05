@@ -1343,7 +1343,7 @@ async def zammad_list_knowledge_base_categories(knowledge_base_id: int) -> str:
             child_ids = [_validate_id(child_id) for child_id in child_ids_raw]
             if len(child_ids) != len(set(child_ids)):
                 raise ValueError("child_ids must not repeat")
-            translation_ids_raw = value.get("translation_ids", [])
+            translation_ids_raw = value.get("translation_ids")
             if not isinstance(translation_ids_raw, list):
                 raise ValueError("translation_ids must be a list")
             translation_ids = [_validate_id(translation_id) for translation_id in translation_ids_raw]
