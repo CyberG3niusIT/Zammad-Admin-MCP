@@ -495,7 +495,7 @@ async def _request(
         and int(path[len(spec.path) + 1 :]) > 0
         for spec in _RESOURCES.values()
     )
-    knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions)", path))
+    knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions|/categories/\d+/permissions)", path))
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
     translation_search_path = bool(re.fullmatch(r"/translations/search/[a-zA-Z0-9-]{2,35}", path))
     translation_item_path = bool(re.fullmatch(r"/translations/\d+", path))
@@ -927,6 +927,8 @@ async def zammad_list_admin_resources() -> str:
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
+        "knowledge_base_permissions": {"operations": ["read", "update"], "risk": "Changes role access to public Knowledge Base content; explicit confirmation required."},
+        "knowledge_base_category_permissions": {"operations": ["read", "update"], "risk": "Changes inherited role access for a category and can affect descendant categories; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "knowledge_base_categories": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "ldap_connection_tests": {"operations": ["discover", "bind"], "risk": "Connects from Zammad to the configured LDAP host; bind credentials are secret-safe and every action requires approval."},
@@ -1307,6 +1309,14 @@ async def zammad_get_knowledge_base(knowledge_base_id: int) -> str:
 async def zammad_get_knowledge_base_permissions(knowledge_base_id: int) -> str:
     """Read the role permissions configured for one Knowledge Base."""
     return _json(await _get(f"/knowledge_bases/{_validate_id(knowledge_base_id)}/permissions"))
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_category_permissions(knowledge_base_id: int, category_id: int) -> str:
+    """Read configured and inherited role access for one Knowledge Base category."""
+    kb_id = _validate_id(knowledge_base_id)
+    category = _validate_id(category_id)
+    return _json(await _get(f"/knowledge_bases/{kb_id}/categories/{category}/permissions"))
 
 
 def _validate_translation_locale(locale: str) -> str:
@@ -1954,17 +1964,36 @@ async def zammad_prepare_translation_change(
     })
 
 
-@mcp.tool()
-async def zammad_prepare_knowledge_base_permissions_change(
+async def _prepare_knowledge_base_permissions_change(
     knowledge_base_id: int,
+    category_id: int | None,
     permissions: dict[str, str],
     acknowledge_high_impact: bool = False,
 ) -> str:
-    """Preview a full Knowledge Base role-access change; this tool never writes."""
     global _PLAN_CLEANER
     if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
         _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
     kb_id = _validate_id(knowledge_base_id)
+    category = _validate_id(category_id) if category_id is not None else None
+    permission_path = (
+        f"/knowledge_bases/{kb_id}/permissions"
+        if category is None
+        else f"/knowledge_bases/{kb_id}/categories/{category}/permissions"
+    )
+    category_path = f"/knowledge_bases/{kb_id}/categories/{category}" if category is not None else None
+    category_snapshot: Mapping[str, Any] | None = None
+    if category is not None:
+        category_value = await _get(category_path)
+        if not isinstance(category_value, Mapping):
+            raise RuntimeError("Zammad did not return the Knowledge Base category snapshot")
+        try:
+            snapshot_category_id = _validate_id(category_value.get("id"))
+            snapshot_kb_id = _validate_id(category_value.get("knowledge_base_id"))
+        except ValueError as exc:
+            raise RuntimeError("Zammad returned an invalid Knowledge Base category snapshot") from exc
+        if snapshot_category_id != category or snapshot_kb_id != kb_id:
+            raise ValueError("category_id does not identify a category in the selected Knowledge Base")
+        category_snapshot = category_value
     if not acknowledge_high_impact:
         raise ValueError("Knowledge Base access changes require acknowledge_high_impact=true")
     if not isinstance(permissions, dict) or not permissions:
@@ -1981,7 +2010,7 @@ async def zammad_prepare_knowledge_base_permissions_change(
             raise ValueError("permission keys must not repeat a role ID")
         normalized[normalized_role_id] = access
 
-    before = await _get(f"/knowledge_bases/{kb_id}/permissions")
+    before = await _get(permission_path)
     if not isinstance(before, Mapping):
         raise RuntimeError("Zammad did not return the Knowledge Base permission snapshot")
     roles_editor = before.get("roles_editor")
@@ -2002,11 +2031,37 @@ async def zammad_prepare_knowledge_base_permissions_change(
     if set(normalized) != set(role_access):
         raise ValueError("permissions must include exactly every role currently eligible for Knowledge Base access")
 
-    explicit = {
-        str(item.get("role_id")): item.get("access")
-        for item in before.get("permissions", [])
-        if isinstance(item, Mapping) and item.get("role_id") is not None
-    } if isinstance(before.get("permissions"), list) else {}
+    effective_items = before.get("permissions")
+    if not isinstance(effective_items, list) or any(not isinstance(item, Mapping) for item in effective_items):
+        raise RuntimeError("Zammad returned an invalid effective Knowledge Base permission list")
+    explicit: dict[str, str] = {}
+    for item in effective_items:
+        role_id = item.get("role_id")
+        access = item.get("access")
+        if isinstance(role_id, bool) or not isinstance(role_id, int) or role_id <= 0 or not isinstance(access, str):
+            raise RuntimeError("Zammad returned an invalid effective Knowledge Base permission")
+        role_key = str(role_id)
+        if role_key in explicit:
+            raise RuntimeError("Zammad returned duplicate effective Knowledge Base permissions")
+        explicit[role_key] = access
+
+    inherited_items = before.get("inherited", []) if category is not None else []
+    if not isinstance(inherited_items, list) or any(not isinstance(item, Mapping) for item in inherited_items):
+        raise RuntimeError("Zammad returned an invalid inherited Knowledge Base permission list")
+    inherited: dict[str, str] = {}
+    for item in inherited_items:
+        role_id = item.get("role_id")
+        access = item.get("access")
+        if (
+            isinstance(role_id, bool) or not isinstance(role_id, int) or role_id <= 0
+            or not isinstance(access, str) or access not in {"editor", "reader", "none"}
+        ):
+            raise RuntimeError("Zammad returned an invalid inherited Knowledge Base permission")
+        role_key = str(role_id)
+        if role_key in inherited:
+            raise RuntimeError("Zammad returned duplicate inherited Knowledge Base permissions")
+        inherited[role_key] = access
+
     before_access: dict[str, str] = {}
     after_access: dict[str, str] = {}
     for role_id, (name, default_access) in role_access.items():
@@ -2015,15 +2070,72 @@ async def zammad_prepare_knowledge_base_permissions_change(
         allowed = {"editor", "reader", "none"} if default_access == "editor" else {"reader", "none"}
         if current_access not in allowed or requested_access not in allowed:
             raise ValueError(f"Role {name!r} has an access level that is invalid for its current permissions")
+        parent_access = inherited.get(role_id)
+        if category is not None and parent_access in {"editor", "none"} and requested_access != parent_access:
+            raise ValueError(f"Role {name!r} must retain {parent_access} access inherited from its parent")
         before_access[role_id] = current_access
         after_access[role_id] = requested_access
+
+    dependencies: list[dict[str, Any]] = []
+    affected_descendants: list[int] = []
+    if category is not None:
+        category_rows = await _get(f"/knowledge_bases/{kb_id}/categories")
+        if not isinstance(category_rows, list) or any(not isinstance(item, Mapping) for item in category_rows):
+            raise RuntimeError("Zammad did not return the Knowledge Base category list needed for a safe preview")
+        categories: dict[int, Mapping[str, Any]] = {}
+        children: dict[int, list[int]] = {}
+        for item in category_rows:
+            item_id = item.get("id")
+            parent_id = item.get("parent_id")
+            item_kb_id = item.get("knowledge_base_id", kb_id)
+            if (
+                isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0
+                or (parent_id is not None and (isinstance(parent_id, bool) or not isinstance(parent_id, int) or parent_id <= 0))
+                or isinstance(item_kb_id, bool) or not isinstance(item_kb_id, int) or item_kb_id != kb_id
+            ):
+                raise RuntimeError("Zammad returned an invalid Knowledge Base category list")
+            if item_id in categories:
+                raise RuntimeError("Zammad returned duplicate Knowledge Base categories")
+            categories[item_id] = item
+            if parent_id is not None:
+                children.setdefault(parent_id, []).append(item_id)
+        if category not in categories:
+            raise RuntimeError("The selected category is missing from the Knowledge Base category list")
+
+        pending = list(children.get(category, []))
+        seen = {category}
+        while pending:
+            descendant_id = pending.pop()
+            if descendant_id in seen:
+                raise RuntimeError("Zammad returned a cyclic Knowledge Base category tree")
+            seen.add(descendant_id)
+            affected_descendants.append(descendant_id)
+            pending.extend(children.get(descendant_id, []))
+
+        category_collection_path = f"/knowledge_bases/{kb_id}/categories"
+        dependencies.append({"path": category_collection_path, "fingerprint": _digest(category_rows)})
+        dependencies.append({"path": category_path, "fingerprint": _digest(category_snapshot)})
+        for descendant_id in affected_descendants:
+            descendant_path = f"/knowledge_bases/{kb_id}/categories/{descendant_id}"
+            descendant_snapshot = await _get(descendant_path)
+            descendant_permissions_path = f"{descendant_path}/permissions"
+            descendant_permissions = await _get(descendant_permissions_path)
+            if not isinstance(descendant_snapshot, Mapping) or not isinstance(descendant_permissions, Mapping):
+                raise RuntimeError("Zammad did not return a descendant category snapshot")
+            if descendant_snapshot.get("id") != descendant_id or descendant_snapshot.get("knowledge_base_id") != kb_id:
+                raise RuntimeError("Zammad returned a descendant outside the selected Knowledge Base")
+            dependencies.extend((
+                {"path": descendant_path, "fingerprint": _digest(descendant_snapshot)},
+                {"path": descendant_permissions_path, "fingerprint": _digest(descendant_permissions)},
+            ))
 
     plan_id = secrets.token_urlsafe(24)
     now = time.time()
     plan = {
-        "resource": "__knowledge_base_permissions__", "operation": "update", "object_id": kb_id,
+        "resource": "__knowledge_base_category_permissions__" if category is not None else "__knowledge_base_permissions__",
+        "operation": "update", "object_id": kb_id, "category_id": category,
         "data": {"permissions_dialog": {"permissions": normalized}},
-        "snapshot_path": f"/knowledge_bases/{kb_id}/permissions",
+        "snapshot_path": permission_path, "write_path": permission_path, "dependencies": dependencies,
         "fingerprint": _digest(before), "before": before,
         "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
     }
@@ -2040,14 +2152,39 @@ async def zammad_prepare_knowledge_base_permissions_change(
         ]
 
     return _json({
-        "plan_id": plan_id, "resource": "knowledge_base_permissions", "operation": "update",
-        "object_id": kb_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "plan_id": plan_id,
+        "resource": "knowledge_base_category_permissions" if category is not None else "knowledge_base_permissions",
+        "operation": "update", "object_id": kb_id, "category_id": category,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
         "snapshot_fingerprint": plan["fingerprint"],
-        "risk": "Changes which roles can read or edit public Knowledge Base content; Zammad prevents the acting user from removing their own editor access.",
+        "risk": "Changes role access to public Knowledge Base content. A category change can also alter inherited access in descendant categories; those descendant records are recalculated by Zammad when the change is applied. Zammad prevents the acting user from removing their own editor access.",
         "before": entries(before_access), "after": entries(after_access),
+        "inherited": inherited_items,
+        "affected_descendant_category_ids": affected_descendants,
         "approval_required": True,
-        "note": "No write was performed. Apply only after explicit user approval.",
+        "note": "No write was performed. Zammad may clean up inherited permission overrides in the listed descendant categories. Apply only after explicit user approval.",
     })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_permissions_change(
+    knowledge_base_id: int,
+    permissions: dict[str, str],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a full Knowledge Base role-access change; this tool never writes."""
+    return await _prepare_knowledge_base_permissions_change(knowledge_base_id, None, permissions, acknowledge_high_impact)
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_category_permissions_change(
+    knowledge_base_id: int,
+    category_id: int,
+    permissions: dict[str, str],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Preview a full role-access change for one category; this tool never writes."""
+    return await _prepare_knowledge_base_permissions_change(knowledge_base_id, category_id, permissions, acknowledge_high_impact)
 
 
 @mcp.tool()
@@ -3341,8 +3478,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             }
         elif resource == "__knowledge_base_settings__":
             result = await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
-        elif resource == "__knowledge_base_permissions__":
-            result = await _request("PATCH", f"/knowledge_bases/{plan['object_id']}/permissions", data)
+        elif resource in {"__knowledge_base_permissions__", "__knowledge_base_category_permissions__"}:
+            result = await _request("PATCH", plan["write_path"], data)
             result = {"updated": isinstance(result, Mapping), "permission_details_returned": False}
         elif resource == "__translation_change__":
             if operation == "upsert":

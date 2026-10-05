@@ -167,8 +167,10 @@ Knowledge base:
 
 - `zammad_get_knowledge_base`
 - `zammad_get_knowledge_base_permissions`
+- `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
 - `zammad_prepare_knowledge_base_permissions_change`
+- `zammad_prepare_knowledge_base_category_permissions_change`
 
 Translations:
 
