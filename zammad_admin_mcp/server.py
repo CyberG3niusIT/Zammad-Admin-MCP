@@ -781,7 +781,6 @@ async def zammad_prepare_admin_change(
             if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
         ] if isinstance(before, Mapping) else []
         before_preview = {
-            "existing_token_count": len(before.get("tokens", [])) if isinstance(before, Mapping) and isinstance(before.get("tokens"), list) else None,
             "active_permission_count": len(available_permissions),
             "requested_permissions_are_active": True,
         }
