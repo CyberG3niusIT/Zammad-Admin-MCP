@@ -79,7 +79,7 @@ B --> C
 C --> D
 ```
 
-The architecture separates intent, validation and execution.
+The architecture separates intent, validation and execution. `zammad_admin_mcp/server.py` registers MCP tools and coordinates allowlists, previews, approvals and stale-state checks. `zammad_admin_mcp/api_transport.py` handles Zammad HTTP transport and endpoint configuration. Secret redaction, environment-backed secret handling and local token storage live in `zammad_admin_mcp/security.py`. Resource-specific payload validation lives in `zammad_admin_mcp/admin_schemas/`.
 
 Administrative operations are not executed merely because the MCP server is connected.
 
@@ -119,6 +119,7 @@ Supported workflows include:
 - selected delete operations
 - selected high-impact configuration changes
 - staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
+- jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.
 
@@ -211,6 +212,10 @@ The objective is reliable automation.
 - [Zammad 7.1.2 email channel routes](https://github.com/zammad/zammad/blob/7.1.2/config/routes/channel_email.rb)
 
 See `ADMIN_COVERAGE.md` for detailed coverage information.
+
+## Website
+
+The static product website is in [`website/index.html`](website/index.html). It has no build step or additional runtime dependencies.
 
 ---
 

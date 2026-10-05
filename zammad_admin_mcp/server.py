@@ -6,21 +6,40 @@ import asyncio
 import hashlib
 import ipaddress
 import json
-import os
 import re
 import secrets
-import stat
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from zammad_admin_mcp.api_transport import request as _send_api_request
+from zammad_admin_mcp.security import _collect_secret_literals
+from zammad_admin_mcp.security import _is_sensitive_setting_name
+from zammad_admin_mcp.security import _materialize_secret_values
+from zammad_admin_mcp.security import _project_settings
+from zammad_admin_mcp.security import _redact_exact_secrets
+from zammad_admin_mcp.security import _scrub
+from zammad_admin_mcp.security import _store_generated_token
+from zammad_admin_mcp.security import _validate_setting_secret_reference
+from zammad_admin_mcp.security import _validate_token_create_payload
+from zammad_admin_mcp.admin_schemas.chats import validate_payload as validate_chat_payload
+from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
+from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
+from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
+from zammad_admin_mcp.admin_schemas.ldap_actions import materialize_payload as materialize_ldap_action
+from zammad_admin_mcp.admin_schemas.ldap_actions import retain_source_values as retain_ldap_action_values
+from zammad_admin_mcp.admin_schemas.ldap_actions import validate_payload as validate_ldap_action_payload
+from zammad_admin_mcp.admin_schemas.ldap_sources import materialize_payload as materialize_ldap_source
+from zammad_admin_mcp.admin_schemas.ldap_sources import role_ids as ldap_role_ids
+from zammad_admin_mcp.admin_schemas.ldap_sources import retain_existing_secret as retain_ldap_secret
+from zammad_admin_mcp.admin_schemas.ldap_sources import validate_payload as validate_ldap_source_payload
+from zammad_admin_mcp.admin_schemas.postmaster_filters import validate_payload as validate_postmaster_filter_payload
+from zammad_admin_mcp.admin_schemas.public_links import validate_payload as validate_public_link_payload
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
@@ -33,7 +52,6 @@ class Resource:
     item: bool = True
 
 
-# Paths and methods are server-owned. There is deliberately no arbitrary API tool.
 _RESOURCES: dict[str, Resource] = {
     "groups": Resource("/groups", risk="Changes ticket routing and group access.", high_impact=True),
     "roles": Resource("/roles", risk="Changes user permissions and may remove administrative access.", high_impact=True),
@@ -81,12 +99,15 @@ _RESOURCES: dict[str, Resource] = {
         high_impact=True,
         item=False,
     ),
-    # Zammad's admin UI uses the Settings REST controller for configuration forms.
-    # Restrict writes to a setting's current value; do not expose an arbitrary route.
     "settings": Resource("/settings", operations=frozenset({"update"}), risk="May change authentication, integrations, security, or service behavior.", high_impact=True),
+    "jobs": Resource("/jobs", risk="Scheduled jobs can change tickets, users, or organizations when they run.", high_impact=True),
+    "public_links": Resource("/public_links", risk="Changes public login, signup, or password-reset links; inspect destination and screen before approval.", high_impact=True),
+    "postmaster_filters": Resource("/postmaster_filters", risk="Changes inbound email processing, ticket routing, and actions.", high_impact=True),
+    "ldap_sources": Resource("/ldap_sources", risk="LDAP settings affect authentication and user synchronization; bind passwords are set only from process environment references.", high_impact=True),
+    "chats": Resource("/chats", risk="Chat configuration changes availability; deletion also removes chat sessions.", high_impact=True),
+    "external_credentials": Resource("/external_credentials", risk="Replaces connected provider settings or secrets and may affect external integrations.", high_impact=True),
 }
 
-# This endpoint is intentionally special: its POST sends a real test email and saves settings.
 _SPECIAL_CHANNEL = "email_notification"
 _SPECIAL_PATH = "/channels_email_notification"
 _SPECIAL_READ_PATH = "/channels_email"
@@ -97,7 +118,6 @@ _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
 _EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
 _EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
 _MESSAGE_CHANNEL_RESOURCES = {"sms_channels", "telegram_channels", "whatsapp_channels"}
-_SECRET_WORDS = {"password", "pass", "pw", "secret", "token", "credential", "authorization"}
 _PLAN_TTL_SECONDS = 300
 _MAX_PLANS = 100
 _PLANS: dict[str, dict[str, Any]] = {}
@@ -108,159 +128,10 @@ _PLAN_CLEANER: asyncio.Task[None] | None = None
 mcp = FastMCP("zammad-admin")
 
 
-def _api_root() -> str:
-    raw_url = os.environ.get("ZAMMAD_URL", "").strip()
-    token = os.environ.get("ZAMMAD_HTTP_TOKEN", "").strip()
-    if not raw_url or not token:
-        raise ValueError("ZAMMAD_URL and ZAMMAD_HTTP_TOKEN must be configured")
-    parsed = urlsplit(raw_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-        raise ValueError("ZAMMAD_URL must be an absolute HTTP or HTTPS URL")
-    if parsed.scheme != "https" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise ValueError("ZAMMAD_URL must use HTTPS unless it targets a loopback address")
-    if parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise ValueError("ZAMMAD_URL must not contain credentials, a query, or a fragment")
-    path = parsed.path.rstrip("/")
-    if not path.endswith("/api/v1"):
-        path = f"{path}/api/v1" if path else "/api/v1"
-    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
-
-
-def _headers() -> dict[str, str]:
-    token = os.environ.get("ZAMMAD_HTTP_TOKEN", "").strip()
-    if not token:
-        raise ValueError("ZAMMAD_HTTP_TOKEN must be configured")
-    return {"Authorization": f"Token token={token}", "Accept": "application/json"}
-
-
 def _validate_id(object_id: int | None) -> int:
     if isinstance(object_id, bool) or not isinstance(object_id, int) or object_id <= 0:
         raise ValueError("object_id must be a positive integer")
     return object_id
-
-
-def _is_secret_field(key: str, value: Any) -> bool:
-    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).lower()
-    if normalized in {"user_access_tokens", "access_tokens", "tokens"} and isinstance(value, (Mapping, list)):
-        return False
-    words = set(re.findall(r"[a-z0-9]+", normalized))
-    return (
-        bool(words & _SECRET_WORDS)
-        or normalized.endswith(("_pw", "_pass"))
-        or "private_key" in normalized
-        or ("api" in words and "key" in words)
-    )
-
-
-def _scrub(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(k): ("[REDACTED]" if _is_secret_field(str(k), v) and v not in (None, "", False) else _scrub(v)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_scrub(item) for item in value]
-    return value
-
-
-def _materialize_secret_values(value: Any) -> tuple[Any, Any]:
-    """Resolve explicit process-environment references without putting secrets in tool arguments."""
-    if isinstance(value, Mapping) and set(value) == {"$secret_env"}:
-        env_name = value["$secret_env"]
-        if not isinstance(env_name, str) or not re.fullmatch(r"(?:ZAMMAD|MCP)_SECRET_[A-Z0-9_]+", env_name):
-            raise ValueError("Secret references must name a ZAMMAD_SECRET_* or MCP_SECRET_* environment variable")
-        secret = os.environ.get(env_name)
-        if not secret:
-            raise ValueError(f"The referenced secret environment variable {env_name} is not configured")
-        return secret, "[SECRET PROVIDED BY PROCESS ENVIRONMENT]"
-    if isinstance(value, Mapping):
-        resolved: dict[str, Any] = {}
-        preview: dict[str, Any] = {}
-        for key, item in value.items():
-            resolved_item, preview_item = _materialize_secret_values(item)
-            if (
-                _is_secret_field(str(key), item)
-                and item not in (None, "", False)
-                and not isinstance(item, Mapping)
-            ):
-                raise ValueError(f"Secret field {key!r} must use a secure environment reference, not an inline value")
-            resolved[str(key)] = resolved_item
-            preview[str(key)] = preview_item
-        return resolved, preview
-    if isinstance(value, list):
-        pairs = [_materialize_secret_values(item) for item in value]
-        return [x[0] for x in pairs], [x[1] for x in pairs]
-    return value, value
-
-
-def _validate_setting_secret_reference(data: Mapping[str, Any]) -> None:
-    setting_name = data.get("name")
-    value = data.get("state_current", {}).get("value") if isinstance(data.get("state_current"), Mapping) else None
-    if isinstance(setting_name, str) and _is_secret_field(setting_name, value) and not isinstance(value, Mapping):
-        if value not in (None, ""):
-            raise ValueError("Secret settings must use a secure environment reference, not an inline value")
-
-
-def _store_generated_token(token: str, metadata: Mapping[str, Any]) -> Path:
-    """Write a one-time token using directory-relative, no-follow file operations."""
-    raw_directory = os.environ.get("ZAMMAD_TOKEN_STORE_DIR", "").strip()
-    directory = Path(raw_directory).expanduser() if raw_directory else Path.home() / ".config" / "zammad-admin-mcp" / "tokens"
-    if not directory.is_absolute():
-        raise RuntimeError("Token store directory must be absolute")
-    directory = Path(os.path.abspath(directory))
-    project_root = Path(__file__).resolve().parents[1]
-    if directory == project_root or project_root in directory.parents:
-        raise RuntimeError("Token store must be outside the project directory")
-    root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-    current_fd = root_fd
-    try:
-        parts = directory.parts[1:]
-        for index, part in enumerate(parts):
-            try:
-                os.mkdir(part, 0o700, dir_fd=current_fd)
-            except FileExistsError:
-                pass
-            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current_fd)
-            if current_fd != root_fd:
-                os.close(current_fd)
-            current_fd = next_fd
-            if index == len(parts) - 1:
-                directory_info = os.fstat(current_fd)
-                if directory_info.st_uid != os.getuid() or stat.S_IMODE(directory_info.st_mode) != 0o700:
-                    raise RuntimeError("Token store directory must be owned by the MCP user with mode 0700")
-        if not parts:
-            raise RuntimeError("Token store directory must not be the filesystem root")
-        label = re.sub(r"[^A-Za-z0-9._-]+", "-", str(metadata.get("name", "token"))).strip("-._")[:32] or "token"
-        filename = f"{label}-{secrets.token_urlsafe(12)}.json"
-        descriptor = os.open(
-            filename,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=current_fd,
-        )
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump({**dict(metadata), "token": token}, output, ensure_ascii=False)
-                output.write("\n")
-                output.flush()
-                os.fsync(output.fileno())
-            file_info = os.stat(filename, dir_fd=current_fd, follow_symlinks=False)
-            if not stat.S_ISREG(file_info.st_mode) or file_info.st_uid != os.getuid() or stat.S_IMODE(file_info.st_mode) != 0o600:
-                raise RuntimeError("Token file permissions are not owner-only")
-            os.fsync(current_fd)
-        except Exception:
-            try:
-                os.unlink(filename, dir_fd=current_fd)
-                os.fsync(current_fd)
-            except OSError:
-                pass
-            raise
-        return directory / filename
-    except Exception as exc:
-        if isinstance(exc, RuntimeError) and str(exc).startswith("Token store directory"):
-            raise
-        raise RuntimeError("Zammad created a token but secure local storage failed; inspect token metadata and revoke it if needed") from None
-    finally:
-        if current_fd != root_fd:
-            os.close(current_fd)
-        os.close(root_fd)
 
 
 def _json(value: Any) -> str:
@@ -273,8 +144,6 @@ def _digest(value: Any) -> str:
 
 
 def _snapshot_fingerprint(resource: str, value: Any) -> str:
-    # Token last_used_at/updated_at changes merely by reading the token endpoint.
-    # Fingerprint its permission catalog and existing IDs so ordinary MCP reads do not stale a plan.
     if resource == "user_access_tokens" and isinstance(value, Mapping):
         permissions = value.get("permissions", [])
         tokens = value.get("tokens", [])
@@ -287,34 +156,6 @@ def _snapshot_fingerprint(resource: str, value: Any) -> str:
         }
         return _digest(stable)
     return _digest(value)
-
-
-def _validate_token_create_payload(data: Any, snapshot: Any) -> None:
-    if not isinstance(data, dict) or set(data) - {"name", "permission", "expires_at"}:
-        raise ValueError("Token creation accepts only name, permission, and optional expires_at")
-    name = data.get("name")
-    permissions = data.get("permission")
-    if not isinstance(name, str) or not name.strip() or len(name) > 100:
-        raise ValueError("Token name must be a non-empty string of at most 100 characters")
-    if not isinstance(permissions, list) or not permissions or any(not isinstance(item, str) for item in permissions):
-        raise ValueError("permission must be a non-empty array of permission names")
-    allowed = {
-        item["name"] for item in snapshot.get("permissions", [])
-        if isinstance(item, Mapping) and item.get("active") is True and isinstance(item.get("name"), str)
-    } if isinstance(snapshot, Mapping) else set()
-    unknown = sorted(set(permissions) - allowed)
-    if unknown:
-        raise ValueError("Unknown or inactive token permissions: " + ", ".join(unknown))
-    if len(set(permissions)) != len(permissions):
-        raise ValueError("permission must not contain duplicates")
-    expiry = data.get("expires_at")
-    if expiry is not None:
-        if not isinstance(expiry, str):
-            raise ValueError("expires_at must be an ISO date (YYYY-MM-DD)")
-        try:
-            date.fromisoformat(expiry)
-        except ValueError as exc:
-            raise ValueError("expires_at must be a valid ISO date (YYYY-MM-DD)") from exc
 
 
 def _validate_channel_payload(resource: str, operation: str, data: Any) -> None:
@@ -436,14 +277,15 @@ def _resource(resource: str) -> Resource:
         raise ValueError("Unsupported Zammad admin resource") from exc
 
 
-async def _request(method: str, path: str, payload: Any = None, params: dict[str, int] | None = None) -> Any:
-    # Defense in depth: only fixed registered collection/item routes are accepted.
+async def _request(method: str, path: str, payload: Any = None, params: dict[str, Any] | None = None) -> Any:
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
         "/channels_telegram_enable", "/channels_telegram_disable",
         "/channels/admin/whatsapp/preload",
+        "/integration/ldap/discover", "/integration/ldap/bind",
+        "/integration/ldap/job_try", "/integration/ldap/job_start",
     }
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
@@ -461,24 +303,10 @@ async def _request(method: str, path: str, payload: Any = None, params: dict[str
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
-    async with httpx.AsyncClient(
-        base_url=_api_root(), headers={**_headers(), "Content-Type": "application/json"},
-        timeout=httpx.Timeout(30.0), follow_redirects=False,
-    ) as client:
-        response = await client.request(method, path.lstrip("/"), json=payload, params=params)
-    if response.is_redirect:
-        raise RuntimeError("Zammad redirected an API request; check ZAMMAD_URL")
-    if response.status_code >= 400:
-        raise RuntimeError(f"Zammad API request failed with HTTP {response.status_code}; check endpoint, payload, and token permissions")
-    if not response.content:
-        return {}
-    try:
-        return response.json()
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("Zammad returned a non-JSON API response") from exc
+    return await _send_api_request(method, path, payload, params)
 
 
-async def _get(path: str, params: dict[str, int] | None = None) -> Any:
+async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
     return await _request("GET", path, params=params)
 
 
@@ -491,7 +319,7 @@ async def zammad_server_version() -> str:
 @mcp.tool()
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
-    return _json({name: {"operations": sorted(spec.operations), "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
+    return _json({name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
         _SPECIAL_CHANNEL: {"operations": ["configure"], "risk": "POST sends a real test email and saves the active notification channel."},
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
@@ -499,6 +327,8 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_answers": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
         "knowledge_base_categories": {"operations": ["read", "create", "update", "delete"], "risk": "Content writes are high impact and require explicit confirmation."},
+        "ldap_connection_tests": {"operations": ["discover", "bind"], "risk": "Connects from Zammad to the configured LDAP host; bind credentials are secret-safe and every action requires approval."},
+        "ldap_import_actions": {"operations": ["dry_run", "sync"], "risk": "Dry-run reads all active LDAP directories and records aggregate results; sync may create, update, or deactivate Zammad users."},
     })
 
 
@@ -518,7 +348,10 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         return _json(_project_messaging_channels(await _get(_resource(resource).path, params)))
     spec = _resource(resource)
-    return _json(await _get(spec.path, params))
+    result = await _get(spec.path, params)
+    if resource == "settings":
+        result = _project_settings(result)
+    return _json(result)
 
 
 def _register_legacy_list_tool(resource: str) -> None:
@@ -548,7 +381,152 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
     if not spec.item:
         raise ValueError("This resource does not support item reads")
     object_id = _validate_id(object_id)
-    return _json(await _get(f"{spec.path}/{object_id}"))
+    result = await _get(f"{spec.path}/{object_id}")
+    if resource == "settings":
+        result = _project_settings(result)
+    return _json(result)
+
+
+@mcp.tool()
+async def zammad_prepare_ldap_import_action(
+    action: Literal["dry_run", "sync"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare an LDAP dry-run import or full synchronization without starting it."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("LDAP import actions require acknowledge_high_impact=true")
+    if action not in {"dry_run", "sync"}:
+        raise ValueError("Unsupported LDAP import action")
+    sources = await _ldap_sources_snapshot()
+    active_count = sum(source.get("active") is True for source in sources)
+    if active_count == 0:
+        raise ValueError("At least one active LDAP source is required")
+    if await _ldap_import_pending(action):
+        raise ValueError(f"An LDAP {action.replace('_', ' ')} job is already queued or running")
+    dependencies: list[dict[str, str]] = []
+    integration_enabled: bool | None = None
+    if action == "sync":
+        setting = await _ldap_integration_setting_snapshot()
+        integration_enabled = True
+        dependencies.append({"path": f"/settings/{setting['id']}", "fingerprint": _digest(setting)})
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__ldap_import_action__", "operation": action, "object_id": None,
+        "data": {}, "fingerprint": _digest(sources),
+        "before": {"active_source_count": active_count, "total_source_count": len(sources)},
+        "dependencies": dependencies, "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    if action == "dry_run":
+        effects = [
+            f"Read all {active_count} active LDAP sources and their directories",
+            "Create an ImportJob dry-run record and store aggregate import results",
+            "Do not save, update, or deactivate Zammad users or roles",
+        ]
+    else:
+        effects = [
+            f"Queue a background sync across all {active_count} active LDAP sources",
+            "The sync may create, update, or deactivate Zammad users and update role assignments",
+        ]
+    return _json({
+        "plan_id": plan_id,
+        "resource": "ldap_import_actions",
+        "operation": action,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "before": {"active_source_count": active_count, "total_source_count": len(sources), "ldap_integration_enabled": integration_enabled},
+        "after": {"action": action},
+        "write_effects": effects,
+        "approval_required": True,
+        "note": "No import job was created. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_get_ldap_import_status(
+    action: Literal["dry_run", "sync"],
+    include_completed: bool = True,
+) -> str:
+    """Read LDAP import progress and aggregate counts without exposing payloads or directory records."""
+    if action == "dry_run":
+        params = {"finished": "true" if include_completed else "false"}
+        job = await _get("/integration/ldap/job_try", params)
+    else:
+        job = await _get("/integration/ldap/job_start")
+    return _json(_ldap_import_status_summary(job, action))
+
+
+@mcp.tool()
+async def zammad_prepare_ldap_connection_action(
+    action: Literal["discover", "bind"],
+    data: dict[str, Any],
+    source_id: int | None = None,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare an LDAP discovery or bind check without contacting the directory."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("LDAP connection actions require acknowledge_high_impact=true")
+    if action not in {"discover", "bind"}:
+        raise ValueError("Unsupported LDAP connection action")
+    if not isinstance(data, dict):
+        raise ValueError("data must be a JSON object")
+    if action == "discover" and source_id is not None:
+        raise ValueError("discover does not accept source_id")
+    if action == "bind" and source_id is None and data.get("bind_pw") == "**********":
+        raise ValueError("A masked bind password can only be reused when source_id identifies its existing LDAP source")
+    if action == "bind" and source_id is not None:
+        source_id = _validate_id(source_id)
+        source_before = await _get(f"/ldap_sources/{source_id}")
+        if not isinstance(source_before, Mapping):
+            raise RuntimeError("The Zammad API did not return an LDAP source snapshot")
+        data = retain_ldap_action_values(data, source_before)
+    validate_ldap_action_payload(action, data)
+    data, preview_data = materialize_ldap_action(data)
+    before = source_before if action == "bind" and source_id is not None else None
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__ldap_connection_action__", "operation": action, "object_id": source_id,
+        "data": data, "fingerprint": _digest(before) if before is not None else None,
+        "before": before, "dependencies": [], "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    write_effects = ["Connect from Zammad to the LDAP host when this plan is applied"]
+    if action == "bind" and isinstance(preview_data.get("bind_pw"), str) and preview_data["bind_pw"] == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]":
+        write_effects.append("Use the supplied process-environment bind password without returning it")
+    elif action == "bind" and preview_data.get("bind_pw") == "[EXISTING SECRET RETAINED]":
+        write_effects.append("Use the existing bind password without returning it")
+    return _json({
+        "plan_id": plan_id,
+        "resource": "ldap_connection_tests",
+        "operation": action,
+        "object_id": source_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Contacts the configured LDAP server and may reveal directory naming contexts, attributes, or group names.",
+        "before": _scrub(before),
+        "after": {"action": action, "request": preview_data},
+        "write_effects": write_effects,
+        "approval_required": True,
+        "note": "No LDAP request was sent. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -589,6 +567,66 @@ async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any
     if operation == "create":
         return await _get(spec.path)
     return await _get(f"{spec.path}/{_validate_id(object_id)}")
+
+
+async def _ldap_sources_snapshot() -> list[Mapping[str, Any]]:
+    sources: list[Mapping[str, Any]] = []
+    for page in range(1, 101):
+        rows = await _get("/ldap_sources", {"page": page, "per_page": 100})
+        if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+            raise RuntimeError("Zammad did not return an LDAP source list")
+        sources.extend(rows)
+        if len(rows) < 100:
+            return sources
+    raise RuntimeError("LDAP source inventory exceeds the supported snapshot size")
+
+
+async def _ldap_integration_setting_snapshot() -> Mapping[str, Any]:
+    settings = await _get("/settings")
+    if not isinstance(settings, list):
+        raise RuntimeError("Zammad did not return the settings list")
+    candidates = [item for item in settings if isinstance(item, Mapping) and item.get("name") == "ldap_integration"]
+    if len(candidates) != 1:
+        raise RuntimeError("The LDAP integration setting is missing or ambiguous")
+    setting_id = _validate_id(candidates[0].get("id"))
+    setting = await _get(f"/settings/{setting_id}")
+    if not isinstance(setting, Mapping) or setting.get("name") != "ldap_integration":
+        raise RuntimeError("Zammad did not return the LDAP integration setting")
+    state = setting.get("state_current")
+    if not isinstance(state, Mapping) or state.get("value") is not True:
+        raise ValueError("LDAP integration must be enabled before starting a sync")
+    return setting
+
+
+async def _ldap_import_pending(action: str) -> bool:
+    if action == "dry_run":
+        job = await _get("/integration/ldap/job_try", {"finished": "false"})
+    else:
+        job = await _get("/integration/ldap/job_start")
+    return isinstance(job, Mapping) and bool(job) and job.get("finished_at") is None
+
+
+def _ldap_import_status_summary(job: Any, action: str) -> dict[str, Any]:
+    if not isinstance(job, Mapping) or not job:
+        return {"action": action, "status": "not_found"}
+    result = job.get("result") if isinstance(job.get("result"), Mapping) else {}
+    counts = {
+        key: result[key]
+        for key in ("sum", "total", "created", "updated", "unchanged", "skipped", "failed", "deactivated")
+        if isinstance(result.get(key), int) and not isinstance(result.get(key), bool) and result[key] >= 0
+    }
+    finished = bool(job.get("finished_at"))
+    status = "failed" if result.get("error") else "finished" if finished else "running" if job.get("started_at") else "queued"
+    return {
+        "action": action,
+        "status": status,
+        "job_id": job.get("id") if isinstance(job.get("id"), int) else None,
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "counts": counts,
+        "has_error_detail": bool(result.get("error")),
+        "has_info_detail": bool(result.get("info")),
+    }
 
 
 @mcp.tool()
@@ -937,11 +975,32 @@ async def zammad_prepare_admin_change(
     if spec.high_impact and not acknowledge_high_impact:
         raise ValueError("This change is high impact; inspect the resource risk and set acknowledge_high_impact=true to prepare it")
 
-    data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
+    ldap_before = None
+    if resource == "ldap_sources" and operation == "update" and isinstance(data, Mapping) and "preferences" in data:
+        ldap_before = await _snapshot(resource, operation, object_id)
+        data = retain_ldap_secret(data, ldap_before)
+    if resource == "ldap_sources" and operation in {"create", "update"}:
+        if operation == "create" and isinstance(data.get("preferences"), Mapping) and data["preferences"].get("bind_pw") == "**********":
+            raise ValueError("A masked bind password can only be reused when updating an existing LDAP source")
+        validate_ldap_source_payload(operation, data)
+        data, preview_data = materialize_ldap_source(data)
+    elif resource == "external_credentials" and operation in {"create", "update"}:
+        validate_external_credentials_payload(operation, data)
+        data, preview_data = materialize_external_credentials(data)
+    else:
+        data, preview_data = _materialize_secret_values(data) if data is not None else (None, None)
+    if resource == "jobs" and operation in {"create", "update"}:
+        validate_job_payload(operation, data)
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         _validate_channel_payload(resource, operation, data)
+    if resource == "public_links" and operation in {"create", "update"}:
+        validate_public_link_payload(operation, data)
+    if resource == "chats" and operation in {"create", "update"}:
+        validate_chat_payload(operation, data)
+    if resource == "postmaster_filters" and operation in {"create", "update"}:
+        validate_postmaster_filter_payload(operation, data)
 
-    before = await _snapshot(resource, operation, object_id)
+    before = ldap_before if ldap_before is not None else await _snapshot(resource, operation, object_id)
     if resource in _MESSAGE_CHANNEL_RESOURCES:
         before_preview = _project_messaging_channels(before)
         if operation in {"create", "update"}:
@@ -975,6 +1034,12 @@ async def zammad_prepare_admin_change(
     if group_id is not None:
         group_before = await _get(f"/groups/{_validate_id(group_id)}")
         dependencies.append({"path": f"/groups/{group_id}", "fingerprint": _digest(group_before)})
+    if resource == "ldap_sources" and operation in {"create", "update"}:
+        for role_id in sorted(ldap_role_ids(data)):
+            role_before = await _get(f"/roles/{role_id}")
+            if not isinstance(role_before, Mapping) or role_before.get("active") is not True:
+                raise ValueError(f"group_role_map role {role_id} must identify an active role")
+            dependencies.append({"path": f"/roles/{role_id}", "fingerprint": _digest(role_before)})
     if resource == _EMAIL_ACCOUNT_RESOURCE and data.get("channel_id") is not None:
         current_ids = before.get("account_channel_ids", []) if isinstance(before, Mapping) else []
         if data["channel_id"] not in current_ids:
@@ -1038,6 +1103,9 @@ async def zammad_prepare_admin_change(
         resource == "user_access_tokens" and operation == "create"
     ):
         before_preview = before
+    if resource == "settings":
+        before_preview = _project_settings(before_preview)
+        after = _project_settings(after)
 
     plan_id = secrets.token_urlsafe(24)
     now = time.time()
@@ -1054,7 +1122,22 @@ async def zammad_prepare_admin_change(
             _PLANS.pop(oldest, None)
         _PLANS[plan_id] = plan
 
-    return _json({
+    write_effects: list[str] = []
+    if resource == "external_credentials" and operation in {"create", "update"} and isinstance(preview_data, Mapping):
+        credentials_preview = preview_data.get("credentials")
+        if isinstance(credentials_preview, Mapping) and credentials_preview.get("client_secret") == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]":
+            write_effects.append("Set the external provider client secret from a process environment reference")
+    if resource == "ldap_sources" and operation in {"create", "update"} and isinstance(preview_data, Mapping):
+        preferences_preview = preview_data.get("preferences")
+        if isinstance(preferences_preview, Mapping):
+            bind_password_preview = preferences_preview.get("bind_pw")
+            if bind_password_preview == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]":
+                write_effects.append("Set the LDAP bind password from a process environment reference")
+            elif bind_password_preview == "[EXISTING SECRET RETAINED]":
+                write_effects.append("Retain the existing LDAP bind password")
+            elif bind_password_preview in (None, ""):
+                write_effects.append("Store no LDAP bind password")
+    preview_response = {
         "plan_id": plan_id,
         "resource": resource,
         "operation": operation,
@@ -1066,7 +1149,10 @@ async def zammad_prepare_admin_change(
         "after": after,
         "approval_required": True,
         "note": "No write was performed. A fresh read-before-write check runs during apply; use apply only after explicit user approval.",
-    })
+    }
+    if write_effects:
+        preview_response["write_effects"] = write_effects
+    return _json(preview_response)
 
 
 @mcp.tool()
@@ -1084,8 +1170,16 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
 
     async with _WRITE_LOCK:
         snapshot_path = plan.get("snapshot_path")
-        current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
-        if _snapshot_fingerprint(plan["resource"], current) != plan["fingerprint"]:
+        if plan["resource"] == "__ldap_connection_action__":
+            current = await _get(f"/ldap_sources/{plan['object_id']}") if plan["object_id"] is not None else None
+            current_fingerprint = _digest(current) if plan["fingerprint"] is not None else None
+        elif plan["resource"] == "__ldap_import_action__":
+            current = await _ldap_sources_snapshot()
+            current_fingerprint = _digest(current)
+        else:
+            current = await _get(snapshot_path) if snapshot_path else await _snapshot(plan["resource"], plan["operation"], plan["object_id"])
+            current_fingerprint = _snapshot_fingerprint(plan["resource"], current)
+        if current_fingerprint != plan["fingerprint"]:
             raise RuntimeError("The resource changed after preview; prepare a new plan")
         for dependency in plan.get("dependencies", []):
             dependency_current = await _get(dependency["path"])
@@ -1094,7 +1188,18 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
-        if resource == _SPECIAL_CHANNEL:
+        if resource == "__ldap_connection_action__":
+            path = "/integration/ldap/discover" if operation == "discover" else "/integration/ldap/bind"
+            payload = dict(data)
+            if operation == "bind" and plan["object_id"] is not None:
+                payload["ldap_source_id"] = plan["object_id"]
+            result = await _request("POST", path, payload)
+        elif resource == "__ldap_import_action__":
+            if await _ldap_import_pending(operation):
+                raise RuntimeError("An LDAP import job was queued or started after preview; prepare a new plan")
+            path = "/integration/ldap/job_try" if operation == "dry_run" else "/integration/ldap/job_start"
+            result = await _request("POST", path, {})
+        elif resource == _SPECIAL_CHANNEL:
             result = await _request("POST", _SPECIAL_PATH, data)
         elif resource == _EMAIL_ACCOUNT_RESOURCE:
             result = await _request("POST", _EMAIL_ACCOUNT_VERIFY_PATH, data)
@@ -1168,7 +1273,22 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 result = await _request("DELETE", f"{spec.path}/{plan['object_id']}")
             else:
                 raise ValueError("Unsupported operation")
-    return _json({"resource": resource, "operation": operation, "result": result, "note": "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."})
+    if resource == "settings" and _is_sensitive_setting_name(plan.get("data", {}).get("name")):
+        result = {"updated": True, "sensitive_value_returned": False}
+    response_resource = {
+        "__ldap_connection_action__": "ldap_connection_tests",
+        "__ldap_import_action__": "ldap_import_actions",
+    }.get(resource, resource)
+    if resource == "__ldap_connection_action__":
+        response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
+    elif resource == "__ldap_import_action__" and operation == "dry_run":
+        response_note = "Plan consumed. A dry-run ImportJob was submitted; it does not save user or role changes. Read status before starting another dry run."
+    elif resource == "__ldap_import_action__":
+        response_note = "Plan consumed. A background LDAP sync was queued and may change users and roles. Read status before retrying."
+    else:
+        response_note = "Plan consumed. If the request timed out or returned an error, inspect Zammad before retrying."
+    response = {"resource": response_resource, "operation": operation, "result": result, "note": response_note}
+    return _json(_redact_exact_secrets(response, _collect_secret_literals(plan.get("data"))))
 
 
 def main() -> None:
