@@ -84,6 +84,8 @@ from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import project_snapshot as project_knowledge_base_attachments_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import validate_upload as validate_knowledge_base_attachment_upload
+from zammad_admin_mcp.admin_schemas.knowledge_base_deletion import preview as preview_knowledge_base_deletion
+from zammad_admin_mcp.admin_schemas.knowledge_base_deletion import project_snapshot as project_knowledge_base_deletion_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import preview_after as preview_knowledge_base_menu_after
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import project_snapshot as project_knowledge_base_menu_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_menu import validate_update as validate_knowledge_base_menu_update
@@ -1051,6 +1053,7 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
         "knowledge_base_ordering": {"operations": ["read", "reorder"], "risk": "Changes public category or answer order; complete sibling preview and explicit confirmation required."},
         "knowledge_base_attachments": {"operations": ["read", "upload", "delete"], "risk": "Reads attachment metadata or changes files attached to a Knowledge Base answer; upload and deletion require explicit confirmation."},
+        "knowledge_base_manager": {"operations": ["delete"], "risk": "Permanently removes a Knowledge Base and its categories, answers, translations, locales, menus, and permissions."},
         "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
@@ -1710,7 +1713,73 @@ async def _knowledge_base_publication_snapshot(knowledge_base_id: int, answer_id
 
 async def _knowledge_base_attachments_snapshot(knowledge_base_id: int, answer_id: int) -> dict[str, Any]:
     answer_value = await _get(f"/knowledge_bases/{knowledge_base_id}/answers/{answer_id}")
-    return project_knowledge_base_attachments_snapshot(answer_value, knowledge_base_id, answer_id)
+    assets = answer_value.get("assets") if isinstance(answer_value, Mapping) else None
+    answer_assets = assets.get("KnowledgeBaseAnswer") if isinstance(assets, Mapping) else None
+    answer = answer_assets.get(str(answer_id)) if isinstance(answer_assets, Mapping) else None
+    category_id = _validate_id(answer.get("category_id")) if isinstance(answer, Mapping) else None
+    if category_id is None:
+        raise RuntimeError("Zammad did not return the Knowledge Base answer category")
+    category = await _get(f"/knowledge_bases/{knowledge_base_id}/categories/{category_id}")
+    return project_knowledge_base_attachments_snapshot(answer_value, knowledge_base_id, answer_id, category)
+
+
+async def _knowledge_base_deletion_snapshot(knowledge_base_id: int) -> dict[str, Any]:
+    knowledge_base = await _get(f"/knowledge_bases/{knowledge_base_id}")
+    inventory = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
+    preliminary_categories = {
+        item["id"] for item in inventory["categories"]
+        if isinstance(item, Mapping) and item.get("knowledge_base_id") == knowledge_base_id
+    }
+    preliminary_answer_ids = {
+        item["id"] for item in inventory["answers"]
+        if isinstance(item, Mapping) and item.get("category_id") in preliminary_categories
+    }
+    content_ids = sorted({
+        _validate_id(item.get("content_id"))
+        for item in inventory["answer_translations"]
+        if isinstance(item, Mapping) and item.get("answer_id") in preliminary_answer_ids
+    })
+    if content_ids:
+        inventory = project_knowledge_base_inventory(await _request(
+            "POST", "/knowledge_bases/init", {"answer_translation_content_ids": content_ids}
+        ))
+    header_menu = await _knowledge_base_menu_snapshot(knowledge_base_id, "header")
+    footer_menu = await _knowledge_base_menu_snapshot(knowledge_base_id, "footer")
+    permissions = await _get(f"/knowledge_bases/{knowledge_base_id}/permissions")
+    categories = [
+        item for item in inventory["categories"]
+        if isinstance(item, Mapping) and item.get("knowledge_base_id") == knowledge_base_id
+    ]
+    categories_by_id = {item["id"]: item for item in categories}
+    category_permissions = {}
+    for category in categories:
+        category_id = _validate_id(category.get("id"))
+        category_permissions[category_id] = await _get(
+            f"/knowledge_bases/{knowledge_base_id}/categories/{category_id}/permissions"
+        )
+    answers = [
+        item for item in inventory["answers"]
+        if isinstance(item, Mapping)
+        and any(category.get("id") == item.get("category_id") for category in categories)
+    ]
+    answer_attachments = {}
+    for answer in answers:
+        answer_id = _validate_id(answer.get("id"))
+        answer_value = await _get(f"/knowledge_bases/{knowledge_base_id}/answers/{answer_id}")
+        answer_assets = answer_value.get("assets") if isinstance(answer_value, Mapping) else None
+        answer_records = answer_assets.get("KnowledgeBaseAnswer") if isinstance(answer_assets, Mapping) else None
+        answer_record = answer_records.get(str(answer_id)) if isinstance(answer_records, Mapping) else None
+        category_id = _validate_id(answer_record.get("category_id")) if isinstance(answer_record, Mapping) else None
+        category = categories_by_id.get(category_id)
+        if category is None:
+            raise RuntimeError("Zammad returned an answer outside the selected Knowledge Base")
+        answer_attachments[answer_id] = project_knowledge_base_attachments_snapshot(
+            answer_value, knowledge_base_id, answer_id, category
+        )
+    return project_knowledge_base_deletion_snapshot(
+        knowledge_base_id, knowledge_base, inventory, header_menu, footer_menu,
+        permissions, category_permissions, answer_attachments,
+    )
 
 
 @mcp.tool()
@@ -2991,6 +3060,46 @@ async def zammad_prepare_knowledge_base_lifecycle_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_deletion(
+    knowledge_base_id: int,
+    confirmation_phrase: str,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare permanent deletion of a Knowledge Base, its content, and attached files."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    if confirmation_phrase != f"DELETE KNOWLEDGE BASE {kb_id}":
+        raise ValueError(f"confirmation_phrase must exactly equal DELETE KNOWLEDGE BASE {kb_id}")
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base deletion requires acknowledge_high_impact=true")
+    before = await _knowledge_base_deletion_snapshot(kb_id)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_deletion__", "operation": "delete",
+        "object_id": kb_id, "before": before, "fingerprint": _digest(before),
+        "expires_at": now + _PLAN_TTL_SECONDS, "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    preview = preview_knowledge_base_deletion(before, kb_id)
+    return _json({
+        "plan_id": plan_id, "resource": "knowledge_base_manager", "operation": "delete",
+        "knowledge_base_id": kb_id, "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "risk": "Irreversibly deletes the Knowledge Base, all categories and answers, translations, locales, menus, role permissions, and attached files.",
+        "before": preview, "after": {"deleted": True, "knowledge_base_id": kb_id},
+        "approval_required": True,
+        "note": "No write was performed. The stale check is immediately before DELETE but is not atomic with changes made directly in Zammad. Zammad's file storage may delete file bytes outside the database transaction; there is no MCP rollback.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_menu_change(
     knowledge_base_id: int,
     location: Literal["header", "footer"],
@@ -4162,6 +4271,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_menu__":
             current = await _knowledge_base_menu_snapshot(plan["object_id"], plan["location"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__knowledge_base_deletion__":
+            current = await _knowledge_base_deletion_snapshot(plan["object_id"])
+            current_fingerprint = _digest(current)
         elif plan["resource"] in {"__knowledge_base_attachment_upload__", "__knowledge_base_attachment_delete__"}:
             current = await _knowledge_base_attachments_snapshot(plan["parent_id"], plan.get("answer_id", plan["object_id"]))
             current_fingerprint = _digest(current)
@@ -4419,6 +4531,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 f"/knowledge_bases/manage/{plan['object_id']}/{operation}",
             )
             result = {"knowledge_base_id": plan["object_id"], "active": data["active"]}
+        elif resource == "__knowledge_base_deletion__":
+            await _request("DELETE", f"/knowledge_bases/manage/{plan['object_id']}")
+            result = {"knowledge_base_id": plan["object_id"], "deleted": True}
         elif resource == "__knowledge_base_menu__":
             await _request(
                 "PATCH",
@@ -4696,6 +4811,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__crypto_material__": plan.get("crypto_resource", "cryptographic_material"),
         "__user_import__": "user_imports",
         "__organization_import__": "organization_imports",
+        "__knowledge_base_deletion__": "knowledge_base_manager",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
         "__knowledge_base_menu__": "knowledge_base_menu_items",
         "__knowledge_base_order__": "knowledge_base_ordering",
@@ -4714,6 +4830,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The token was issued for the current Zammad user and stored in the local secret store. Do not retry if delivery is uncertain; inspect application access first."
     elif resource == "__ticket_notification_reset__":
         response_note = "A background reset was queued. No job ID is returned. If the outcome is uncertain, inspect agent notification preferences before retrying."
+    elif resource == "__knowledge_base_deletion__":
+        response_note = "The Knowledge Base and its associated content were permanently deleted. If the outcome is uncertain, inspect the Knowledge Base inventory before retrying."
     elif resource == "__user_two_factor_action__":
         response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
     elif resource == "__user_unlock__":

@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+import re
 from typing import Any
 
 
@@ -10,7 +11,9 @@ _MODELS = {
     "category_translations": "KnowledgeBaseCategoryTranslation",
     "answers": "KnowledgeBaseAnswer",
     "answer_translations": "KnowledgeBaseAnswerTranslation",
+    "answer_translation_contents": "KnowledgeBaseAnswerTranslationContent",
 }
+_ATTACHMENT_URL = re.compile(r"/attachments/(\d+)(?:[/?#\"'\s]|\Z)")
 
 
 def _records(assets: Mapping[str, Any], model: str) -> list[Mapping[str, Any]]:
@@ -86,6 +89,8 @@ def project_inventory(value: Any) -> dict[str, Any]:
             projected["kb_locale_ids"] = _ids(record["kb_locale_ids"], "Knowledge Base locale IDs")
         if "category_ids" in record:
             projected["category_ids"] = _ids(record["category_ids"], "Knowledge Base category IDs")
+        if "translation_ids" in record:
+            projected["translation_ids"] = _ids(record["translation_ids"], "Knowledge Base translation IDs")
         if "answer_ids" in record:
             projected["answer_ids"] = _ids(record["answer_ids"], "Knowledge Base answer IDs")
         knowledge_bases.append(projected)
@@ -151,9 +156,42 @@ def project_inventory(value: Any) -> dict[str, Any]:
         ],
         "answers": answers,
         "answer_translations": [
-            _named_translation(record, ("answer_id", "kb_locale_id", "title"))
+            _named_translation(record, ("answer_id", "kb_locale_id", "title", "content_id"))
             for record in _records(assets, _MODELS["answer_translations"])
+        ],
+        "answer_translation_contents": [
+            _project_answer_translation_content(record)
+            for record in _records(assets, _MODELS["answer_translation_contents"])
         ],
         "scope": "Knowledge Base records available to the authenticated Zammad user",
         "answer_bodies_returned": False,
+    }
+
+
+def _project_answer_translation_content(record: Mapping[str, Any]) -> dict[str, Any]:
+    content_id = record["id"]
+    body = record.get("body")
+    if not isinstance(body, str):
+        raise RuntimeError("Zammad returned an invalid Knowledge Base answer translation content")
+    raw_attachments = record.get("attachments", [])
+    if not isinstance(raw_attachments, list):
+        raise RuntimeError("Zammad returned invalid Knowledge Base content attachment metadata")
+    attachments = []
+    for item in raw_attachments:
+        if not isinstance(item, Mapping):
+            raise RuntimeError("Zammad returned invalid Knowledge Base content attachment metadata")
+        item_id = item.get("id")
+        filename = item.get("filename")
+        size = item.get("size")
+        if isinstance(item_id, bool) or not isinstance(item_id, int) or item_id <= 0:
+            raise RuntimeError("Zammad returned an invalid Knowledge Base content attachment ID")
+        if not isinstance(filename, str) or not filename or isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise RuntimeError("Zammad returned invalid Knowledge Base content attachment metadata")
+        attachments.append({"id": item_id, "filename": filename, "size_bytes": size})
+    attachment_ids = {item["id"] for item in attachments}
+    inline_ids = {int(match.group(1)) for match in _ATTACHMENT_URL.finditer(body)}
+    return {
+        "id": content_id,
+        "attachments": sorted(attachments, key=lambda item: item["id"]),
+        "inline_attachment_ids": sorted(inline_ids - attachment_ids),
     }

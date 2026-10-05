@@ -12,7 +12,7 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _MIME_TYPE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+(?:;[^\x00-\x1f\x7f]*)?\Z")
 
 
-def project_snapshot(value: Any, knowledge_base_id: int, answer_id: int) -> dict[str, Any]:
+def project_snapshot(value: Any, knowledge_base_id: int, answer_id: int, category_value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise RuntimeError("Zammad did not return a Knowledge Base answer")
     assets = value.get("assets")
@@ -23,6 +23,10 @@ def project_snapshot(value: Any, knowledge_base_id: int, answer_id: int) -> dict
     category_id = answer.get("category_id")
     if isinstance(category_id, bool) or not isinstance(category_id, int) or category_id <= 0:
         raise RuntimeError("Zammad returned an invalid Knowledge Base answer category")
+    if not isinstance(category_value, Mapping):
+        raise RuntimeError("Zammad did not return the Knowledge Base answer category")
+    if category_value.get("id") != category_id or category_value.get("knowledge_base_id") != knowledge_base_id:
+        raise ValueError("answer_id does not identify an answer in the selected Knowledge Base")
     raw_attachments = answer.get("attachments", [])
     if not isinstance(raw_attachments, list):
         raise RuntimeError("Zammad returned invalid Knowledge Base attachment metadata")
