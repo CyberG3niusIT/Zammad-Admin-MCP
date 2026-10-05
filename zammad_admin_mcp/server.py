@@ -1306,6 +1306,85 @@ async def zammad_get_knowledge_base(knowledge_base_id: int) -> str:
 
 
 @mcp.tool()
+async def zammad_list_knowledge_base_categories(knowledge_base_id: int) -> str:
+    """List category IDs and parent/child relationships for one Knowledge Base."""
+    kb_id = _validate_id(knowledge_base_id)
+    knowledge_base = await _get(f"/knowledge_bases/{kb_id}")
+    if not isinstance(knowledge_base, Mapping):
+        raise RuntimeError("Zammad did not return the Knowledge Base snapshot")
+    try:
+        snapshot_kb_id = _validate_id(knowledge_base.get("id"))
+    except ValueError as exc:
+        raise RuntimeError("Zammad returned an invalid Knowledge Base snapshot") from exc
+    if snapshot_kb_id != kb_id:
+        raise RuntimeError("Zammad returned a different Knowledge Base")
+    raw_category_ids = knowledge_base.get("category_ids")
+    if not isinstance(raw_category_ids, list):
+        raise RuntimeError("Zammad did not return the Knowledge Base category IDs")
+
+    category_ids = [_validate_id(item) for item in raw_category_ids]
+    if len(category_ids) != len(set(category_ids)):
+        raise RuntimeError("Zammad returned duplicate Knowledge Base category IDs")
+    semaphore = asyncio.Semaphore(8)
+
+    async def read_category(category_id: int) -> dict[str, Any]:
+        async with semaphore:
+            value = await _get(f"/knowledge_bases/{kb_id}/categories/{category_id}")
+        if not isinstance(value, Mapping):
+            raise RuntimeError("Zammad did not return a category record")
+        try:
+            item_id = _validate_id(value.get("id"))
+            item_kb_id = _validate_id(value.get("knowledge_base_id"))
+            parent_raw = value.get("parent_id")
+            parent_id = _validate_id(parent_raw) if parent_raw is not None else None
+            child_ids_raw = value.get("child_ids")
+            if not isinstance(child_ids_raw, list):
+                raise ValueError("child_ids must be a list")
+            child_ids = [_validate_id(child_id) for child_id in child_ids_raw]
+            if len(child_ids) != len(set(child_ids)):
+                raise ValueError("child_ids must not repeat")
+            translation_ids_raw = value.get("translation_ids", [])
+            if not isinstance(translation_ids_raw, list):
+                raise ValueError("translation_ids must be a list")
+            translation_ids = [_validate_id(translation_id) for translation_id in translation_ids_raw]
+            if len(translation_ids) != len(set(translation_ids)):
+                raise ValueError("translation_ids must not repeat")
+        except ValueError as exc:
+            raise RuntimeError("Zammad returned an invalid Knowledge Base category") from exc
+        if item_id != category_id or item_kb_id != kb_id:
+            raise RuntimeError("Zammad returned a category outside the selected Knowledge Base")
+        return {
+            "category_id": item_id,
+            "parent_category_id": parent_id,
+            "child_category_ids": sorted(child_ids),
+            "translation_ids": sorted(translation_ids),
+            "category_icon": value.get("category_icon"),
+        }
+
+    categories = await asyncio.gather(*(read_category(category_id) for category_id in category_ids))
+    categories_by_id = {item["category_id"]: item for item in categories}
+    for item in categories:
+        parent_id = item["parent_category_id"]
+        if parent_id is not None:
+            parent = categories_by_id.get(parent_id)
+            if parent is None or item["category_id"] not in parent["child_category_ids"]:
+                raise RuntimeError("Zammad returned inconsistent Knowledge Base category relationships")
+        for child_id in item["child_category_ids"]:
+            child = categories_by_id.get(child_id)
+            if child is None or child["parent_category_id"] != item["category_id"]:
+                raise RuntimeError("Zammad returned inconsistent Knowledge Base category relationships")
+        visited = {item["category_id"]}
+        ancestor_id = parent_id
+        while ancestor_id is not None:
+            if ancestor_id in visited:
+                raise RuntimeError("Zammad returned a cyclic Knowledge Base category tree")
+            visited.add(ancestor_id)
+            ancestor_id = categories_by_id[ancestor_id]["parent_category_id"]
+
+    return _json({"knowledge_base_id": kb_id, "categories": sorted(categories, key=lambda item: item["category_id"])})
+
+
+@mcp.tool()
 async def zammad_get_knowledge_base_permissions(knowledge_base_id: int) -> str:
     """Read the role permissions configured for one Knowledge Base."""
     return _json(await _get(f"/knowledge_bases/{_validate_id(knowledge_base_id)}/permissions"))

@@ -166,6 +166,7 @@ Core:
 Knowledge base:
 
 - `zammad_get_knowledge_base`
+- `zammad_list_knowledge_base_categories`
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
