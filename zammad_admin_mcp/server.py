@@ -88,6 +88,9 @@ from zammad_admin_mcp.admin_schemas.time_accounting import project_report as pro
 from zammad_admin_mcp.admin_schemas.time_accounting import project_types as project_time_accounting_types
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_report_request as validate_time_accounting_report_request
 from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload as validate_time_accounting_type_payload
+from zammad_admin_mcp.admin_schemas.reports import project_config as project_report_config
+from zammad_admin_mcp.admin_schemas.reports import project_aggregates as project_report_aggregates
+from zammad_admin_mcp.admin_schemas.reports import validate_request as validate_report_request
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import project_snapshot as project_knowledge_base_attachments_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import validate_upload as validate_knowledge_base_attachment_upload
@@ -560,6 +563,8 @@ async def _request(
         "/knowledge_bases/manage/init",
         "/http_logs",
         "/proxy",
+        "/reports/config",
+        "/reports/generate",
     }
     external_credential_verify_path = bool(re.fullmatch(
         r"/external_credentials/(?:google|microsoft365|microsoft_graph|exchange)/app_verify", path,
@@ -652,6 +657,10 @@ async def _request(
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
+    if path == "/reports/config" and method != "GET":
+        raise ValueError("Report configuration is available through GET only")
+    if path == "/reports/generate" and method != "POST":
+        raise ValueError("Report generation is available through POST only")
     if external_credential_verify_path and method != "POST":
         raise ValueError("External credential app verification supports POST only")
     if ticket_item_path and method != "GET":
@@ -953,6 +962,72 @@ async def zammad_list_calendar_timezones() -> str:
     ):
         raise RuntimeError("Zammad did not return calendar timezones")
     return _json({"timezones": timezones})
+
+
+@mcp.tool()
+async def zammad_get_report_configuration() -> str:
+    """Read report metrics, backends, and profiles available to the current Zammad user."""
+    try:
+        config = await _request("GET", "/reports/config")
+    except Exception:
+        raise RuntimeError("Zammad report configuration could not be read") from None
+    return _json(project_report_config(config))
+
+
+@mcp.tool()
+async def zammad_generate_report_aggregates(
+    profile_id: int,
+    metric: str,
+    backends: list[str],
+    time_range: Literal["realtime", "day", "week", "month", "year"],
+    year: int | None = None,
+    month: int | None = None,
+    day: int | None = None,
+    week: int | None = None,
+    timezone: str | None = None,
+) -> str:
+    """Read bounded report time-series aggregates without returning ticket records."""
+    try:
+        current = project_report_config(await _request("GET", "/reports/config"))
+        payload, max_buckets, backend_labels = validate_report_request(
+            current,
+            profile_id=profile_id,
+            metric=metric,
+            backends=backends,
+            time_range=time_range,
+            year=year,
+            month=month,
+            day=day,
+            week=week,
+            timezone=timezone,
+        )
+    except ValueError:
+        raise
+    except Exception:
+        raise RuntimeError("Zammad report configuration could not be validated") from None
+    try:
+        raw = await _request("POST", "/reports/generate", payload)
+        series = project_report_aggregates(
+            raw,
+            selected_backends=backends,
+            max_buckets=max_buckets,
+            metric=metric,
+        )
+    except Exception:
+        raise RuntimeError("Zammad report aggregates could not be generated; detailed diagnostics were withheld") from None
+    selected_profile = next(item for item in current["profiles"] if item["id"] == profile_id)
+    return _json({
+        "profile": {"id": profile_id, "name": selected_profile["name"]},
+        "metric": metric,
+        "time_range": time_range,
+        "timezone": timezone or "Zammad default",
+        "series": [
+            {"name": name, "display": backend_labels[name], "values": values}
+            for name, values in series.items()
+        ],
+        "ticket_ids_returned": False,
+        "ticket_assets_returned": False,
+    })
 
 
 @mcp.tool()
@@ -1338,6 +1413,7 @@ async def zammad_list_admin_resources() -> str:
         "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
+        "reports": {"operations": ["read_config", "generate_aggregates"], "risk": "Returns scoped report profile metadata and bounded aggregate time series; the report drilldown endpoint is not used."},
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
         "user_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates users in bulk; imports can change user identity, organization, and role assignments."},

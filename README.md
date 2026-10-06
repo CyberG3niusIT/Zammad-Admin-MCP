@@ -121,6 +121,7 @@ Supported workflows include:
 - selected delete operations
 - selected high-impact configuration changes
 - `zammad_list_calendar_timezones` lists the timezone choices used by Zammad's calendar settings
+- `zammad_get_report_configuration` lists safe report metrics and role-visible profiles; `zammad_generate_report_aggregates` reads bounded time-series counts without ticket IDs or assets
 - staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
 - jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
 - External credential app setup can be checked through a separately approved fixed-provider action for Google, Microsoft 365, Microsoft Graph, and Exchange. It does not save credentials or authenticate an account; secret inputs use process environment references and the result omits credentials, OAuth URLs, state values, and raw diagnostics
@@ -331,7 +332,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The checked-in source registers 69 MCP tools and 88 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and the new Knowledge Base creation, translation, and feed-token tools are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
+- The checked-in source registers 71 MCP tools and 89 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange, Knowledge Base, external credential verification, and reporting workflows are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
