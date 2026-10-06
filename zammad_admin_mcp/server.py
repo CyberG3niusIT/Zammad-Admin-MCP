@@ -97,6 +97,8 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_publication import project_an
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_schedule_updates as validate_knowledge_base_schedule_updates
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_transition as validate_knowledge_base_publication_transition
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
+from zammad_admin_mcp.admin_schemas.audit_logs import project_collection as project_audit_logs
+from zammad_admin_mcp.admin_schemas.audit_logs import project_item as project_audit_log
 from zammad_admin_mcp.admin_schemas.user_imports import equivalent_results as equivalent_user_import_results
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_user_import_result
 from zammad_admin_mcp.admin_schemas.user_imports import project_result as project_organization_import_result
@@ -165,6 +167,10 @@ _RESOURCES: dict[str, Resource] = {
     "webhooks": Resource("/webhooks", risk="May call an external system when referenced by a trigger.", high_impact=True),
     "email_addresses": Resource("/email_addresses", risk="Deleting an address can clear group sender settings.", high_impact=True),
     "checklist_templates": Resource("/checklist_templates", risk="Changes reusable checklists available to agents.", high_impact=True),
+    "audit_logs": Resource(
+        "/audit_logs", operations=frozenset(),
+        risk="Read-only security history on Zammad versions that expose the API; sensitive setting values and secret-like fields are redacted.",
+    ),
     "tag_list": Resource("/tag_list", risk="Renaming or deleting a tag changes how ticket data is categorized.", high_impact=True),
     "organizations": Resource("/organizations", risk="Changes or permanently deletes organization and user associations.", high_impact=True),
     "users": Resource("/users", operations=frozenset({"create", "update", "delete", "unlock"}), risk="Changes user identity, roles, and access; unlocking permits a locked account to authenticate again.", high_impact=True),
@@ -520,6 +526,7 @@ async def _request(
         "/users/import",
         "/organizations/import",
         "/calendars/timezones",
+        "/audit_logs/search",
         "/knowledge_bases/init",
         "/knowledge_bases/manage/init",
         "/http_logs",
@@ -574,6 +581,8 @@ async def _request(
     user_unlock_path = bool(re.fullmatch(r"/users/unlock/\d+", path))
     user_history_path = bool(re.fullmatch(r"/users/history/\d+", path))
     organization_history_path = bool(re.fullmatch(r"/organizations/history/\d+", path))
+    audit_log_item_path = bool(re.fullmatch(r"/audit_logs/\d+", path))
+    audit_log_search_path = path == "/audit_logs/search"
     user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
     http_log_facility_path = path in _HTTP_LOG_FACILITY_PATHS.values()
     fixed_special_paths = (
@@ -592,6 +601,7 @@ async def _request(
         time_accounting_report_path,
         user_unlock_path, user_two_factor_path, user_history_path, organization_history_path,
         http_log_facility_path,
+        audit_log_item_path,
         bool(re.fullmatch(r"/integration/pgp/key/\d+", path)),
     )
     crypto_routes = {
@@ -613,6 +623,19 @@ async def _request(
         raise ValueError("OAuth application token issuance supports POST only")
     if time_accounting_report_path and method != "GET":
         raise ValueError("Time accounting reports support GET only")
+    if path == "/audit_logs" and method != "GET":
+        raise ValueError("Audit logs are available as read-only records")
+    if audit_log_item_path and method != "GET":
+        raise ValueError("Audit log entries are available as read-only records")
+    if audit_log_search_path and method not in {"GET", "POST"}:
+        raise ValueError("Audit log search supports GET or POST only")
+    if audit_log_search_path and method == "POST" and (
+        not isinstance(payload, Mapping)
+        or set(payload) - {"query", "with_total_count"}
+        or not isinstance(payload.get("query"), str)
+        or ("with_total_count" in payload and not isinstance(payload["with_total_count"], bool))
+    ):
+        raise ValueError("Audit log search accepts only a query and optional total-count flag")
     if path == "/settings/ticket_agent_default_notifications/apply_to_all" and method != "POST":
         raise ValueError("Applying ticket agent notification defaults supports POST only")
     if path == "/object_manager_attributes_discard_changes" and method != "POST":
@@ -1085,6 +1108,28 @@ async def zammad_list_admin_resources() -> str:
 
 
 @mcp.tool()
+async def zammad_search_audit_logs(query: str, page: int = 1, per_page: int = 100) -> str:
+    """Search the read-only Zammad security audit history."""
+    if not isinstance(query, str) or not query.strip() or len(query) > 5000:
+        raise ValueError("query must contain 1 to 5000 characters")
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ValueError("page must be a positive integer")
+    if isinstance(per_page, bool) or not isinstance(per_page, int) or not 1 <= per_page <= 100:
+        raise ValueError("per_page must be between 1 and 100")
+    params = {"page": page, "per_page": per_page}
+    try:
+        if len(query) <= 1500:
+            result = await _get("/audit_logs/search", {**params, "query": query})
+        else:
+            result = await _request("POST", "/audit_logs/search", {"query": query}, params)
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            raise RuntimeError("The connected Zammad instance does not expose the audit-log API.") from exc
+        raise
+    return _json(project_audit_logs(result))
+
+
+@mcp.tool()
 async def zammad_prepare_user_import(
     csv_data: str,
     separator: str = ",",
@@ -1242,6 +1287,8 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
     if area is not None and (not isinstance(area, str) or not re.fullmatch(r"[A-Za-z0-9_:.-]{1,120}", area)):
         raise ValueError("area must be a valid Zammad settings area name")
     params = {"page": page, "per_page": per_page}
+    if resource == "audit_logs":
+        params.update({"sort_by": "id", "order_by": "DESC"})
     if resource == "pgp_keys":
         return _json(project_pgp_collection(await _get("/integration/pgp/key")))
     if resource == "smime_certificates":
@@ -1282,6 +1329,13 @@ async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int
         return _json(project_oauth_applications(await _get("/applications", {**params, "full": True})))
     if resource == "time_accounting_types":
         return _json(project_time_accounting_types(await _get(_resource(resource).path, params)))
+    if resource == "audit_logs":
+        try:
+            return _json(project_audit_logs(await _get("/audit_logs", params)))
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                raise RuntimeError("The connected Zammad instance does not expose the audit-log API.") from exc
+            raise
     spec = _resource(resource)
     result = await _get(spec.path, params)
     if resource == "settings":
@@ -1491,6 +1545,13 @@ async def zammad_get_admin_object(resource: str, object_id: int) -> str:
         result = await _time_accounting_type_snapshot(object_id)
     elif resource == "ai_agents":
         result = project_agent_snapshot(await _get(f"{spec.path}/{object_id}", {"full": True}))
+    elif resource == "audit_logs":
+        try:
+            result = project_audit_log(await _get(f"{spec.path}/{object_id}"))
+        except RuntimeError as exc:
+            if "HTTP 404" in str(exc):
+                raise RuntimeError("The connected Zammad instance does not expose the audit-log API.") from exc
+            raise
     else:
         result = await _get(f"{spec.path}/{object_id}")
     if result is None:

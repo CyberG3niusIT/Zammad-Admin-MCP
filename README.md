@@ -148,7 +148,7 @@ Supported workflows include:
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 
-The installed Zammad 7.1.2 API cannot create a Knowledge Base: its create route filters the locale field required by the model. A global audit-history endpoint is also unavailable; Zammad's Activity Stream is scoped to the current user and is not an administrative audit log.
+The installed Zammad 7.1.2 API cannot create a Knowledge Base: its create route filters the locale field required by the model. Its global audit-history endpoint is also unavailable. Audit-log read tools target Zammad versions that expose the documented `/api/v1/audit_logs` API; the Activity Stream is scoped to the current user and is not an administrative audit log.
 
 Use `zammad_prepare_data_privacy_deletion` to preview one User or Ticket deletion. Apply the returned plan only after explicit approval; Zammad's background job performs the deletion later and recalculates the linked-ticket impact before execution.
 
@@ -312,7 +312,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- After the user-authorized App Server restart on 2026-10-06, this session exposes 65 Zammad MCP tools. The read-only `zammad_list_admin_resources` call currently returns 81 server-allowlisted resource kinds; this registry does not imply complete Zammad UI coverage.
+- This Codex session still exposes 65 Zammad MCP tools and 81 resource kinds. The repository adds audit-log reads, bringing the source registry to 66 tools and 82 resource kinds after the MCP host reloads; this registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
