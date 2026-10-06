@@ -1232,7 +1232,7 @@ async def zammad_list_http_logs(
 
 @mcp.tool()
 async def zammad_list_admin_resource(resource: str, page: int = 1, per_page: int = 100, area: str | None = None) -> str:
-    """List a fixed admin resource, optionally filtering settings by Zammad area."""
+    """List an administration resource, optionally filtering settings by Zammad area."""
     if isinstance(page, bool) or page < 1:
         raise ValueError("page must be a positive integer")
     if isinstance(per_page, bool) or not 1 <= per_page <= 100:
