@@ -10,7 +10,7 @@ The original tool registry was read-only: server version, groups, roles, expande
 
 | Admin area | Read | Write | Notes / required safeguards |
 |---|---|---|---|
-| Groups, roles, permissions, memberships | Read + staged CRUD | Staged CRUD for groups and users; staged create/update for roles | Preserve the confirmed Admin-equivalent `Codex-Zammad-Anpassung` role. Zammad 7.1.2 exposes no role DELETE route. Role changes can alter administrative access. |
+| Groups, roles, permissions, memberships | Read + staged CRUD | Staged CRUD for groups and users; staged create/update for roles | Preserve the confirmed Admin-equivalent `Codex-Zammad-Anpassung` role. Zammad 7.1.2 exposes no role DELETE route; the current API reference documents list, show, create, and update only. Role changes can alter administrative access. |
 | Checklist templates, tag administration, audit log | Checklist templates and tags read; audit-log list, detail, and search on Zammad versions that expose the endpoint | Staged CRUD for templates/tags; audit logs are read-only | The two collection reads were verified on 7.1.2 (0 checklist templates, 1 tag). The installed 7.1.2 build returns 404 for `/audit_logs` and has no audit-log route/controller, so audit-log MCP reads require a Zammad version exposing that API. Deleting/renaming shared definitions can affect agent workflows and categorization. |
 | Users / agents / organizations | Read + staged CRUD; recent user and organization history | Staged CRUD; staged user and organization CSV imports | CSV imports use Zammad's transactional `try=true` preview, return only aggregate counts and sanitized row error codes, store input only in one expiring in-memory plan per import type, fingerprint the full target inventory, and repeat the dry-run before apply. Destructive CSV deletion is not sent. User imports can create accounts or update identities, organizations, and role assignments; organization imports can create or update organizations. Apply requires explicit high-impact approval. Inventory checks are not atomic with the subsequent import. `zammad_get_user_history` and `zammad_get_organization_history` read at most 500 recent entries, omit related assets, and redact values for secret-like attributes. Organization history and CSV import are source-verified and pending MCP reload. |
 | User account security | Locked-user status and configured two-factor method names; credential details excluded | High-impact staged unlock and removal of one or all two-factor methods | Unlock is available only when the user's failed-login count exceeds Zammad's current threshold. Plans fingerprint the user/lockout state or enabled-method list and recheck before apply. Removing two-factor methods can weaken account protection; no recovery secrets or device details are returned. |
@@ -76,7 +76,7 @@ Official documentation describes a broad REST API, but the `latest` and `pre-rel
 - Admin API navigation: https://docs.zammad.org/en/latest/
 - Groups: https://docs.zammad.org/en/latest/api/group.html
 - Object manager: https://docs.zammad.org/en/latest/api/object.html
-- Roles: https://docs.zammad.org/en/pre-release/api/role.html
+- Roles: https://docs.zammad.org/en/latest/api/role.html
 - Triggers: https://docs.zammad.org/en/pre-release/api/trigger.html
 - Outbound email: https://docs.zammad.org/en/pre-release/api/email-notification.html
 - Zammad 7.1.2 email channel routes: https://github.com/zammad/zammad/blob/7.1.2/config/routes/channel_email.rb
