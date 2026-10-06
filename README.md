@@ -151,7 +151,7 @@ Supported workflows include:
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 
-The installed Zammad 7.1.2 API cannot create a Knowledge Base: its create route filters the locale field required by the model. Its global audit-history endpoint is also unavailable. Audit-log read tools target Zammad versions that expose the documented `/api/v1/audit_logs` API; the Activity Stream is scoped to the current user and is not an administrative audit log.
+Knowledge Base creation uses the Admin UI's `POST /knowledge_bases/manage` route, which accepts the required nested primary-locale attributes. The staged create plan applies Zammad's create-form defaults and checks the Knowledge Base inventory and generated-title settings again before apply. The installed Zammad 7.1.2 API's global audit-history endpoint is unavailable. Audit-log read tools target Zammad versions that expose the documented `/api/v1/audit_logs` API; the Activity Stream is scoped to the current user and is not an administrative audit log.
 
 Use `zammad_prepare_data_privacy_deletion` to preview one User or Ticket deletion. Apply the returned plan only after explicit approval; Zammad's background job performs the deletion later and recalculates the linked-ticket impact before execution.
 
@@ -182,6 +182,7 @@ Knowledge base:
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
+- `zammad_prepare_knowledge_base_creation`
 - `zammad_prepare_knowledge_base_lifecycle_change`
 - `zammad_prepare_knowledge_base_settings_change`
 - `zammad_prepare_knowledge_base_deletion`
@@ -323,7 +324,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- This Codex session still exposes 65 Zammad MCP tools and 81 resource kinds. The repository adds audit-log search plus Exchange status, connection, and import tools, bringing the source registry to 70 tools and 85 resource kinds after the MCP host reloads; this registry does not imply complete Zammad UI coverage.
+- The checked-in source registers 65 MCP tools and 86 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and Knowledge Base creation are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed

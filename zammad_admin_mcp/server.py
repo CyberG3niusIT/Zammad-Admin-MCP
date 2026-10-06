@@ -103,6 +103,7 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_publication import current_st
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import project_answer_snapshot as project_knowledge_base_publication_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_schedule_updates as validate_knowledge_base_schedule_updates
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_transition as validate_knowledge_base_publication_transition
+from zammad_admin_mcp.admin_schemas.knowledge_base_creation import create_payload as knowledge_base_create_payload
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_collection as project_audit_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_item as project_audit_log
@@ -574,6 +575,7 @@ async def _request(
         for spec in _RESOURCES.values()
     )
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions|/categories/\d+/permissions)", path))
+    knowledge_base_create_path = path == "/knowledge_bases/manage"
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
     knowledge_base_lifecycle_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/(?:activate|deactivate)", path))
     knowledge_base_menu_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/update_menu_items", path))
@@ -610,7 +612,7 @@ async def _request(
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
         microsoft_graph_verify_path, microsoft365_inbound_path, microsoft_graph_inbound_path,
         google_action_path, google_group_path, google_verify_path, google_inbound_path,
-        settings_image_path, settings_reset_path, item_path, knowledge_base_path,
+        settings_image_path, settings_reset_path, item_path, knowledge_base_path, knowledge_base_create_path,
         knowledge_base_settings_path, knowledge_base_lifecycle_path, knowledge_base_menu_path,
         knowledge_base_order_path,
         knowledge_base_publication_path,
@@ -666,6 +668,8 @@ async def _request(
         raise ValueError("Organization CSV imports support POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
+    if knowledge_base_create_path and method != "POST":
+        raise ValueError("Knowledge Base creation supports POST only")
     if path == _EXCHANGE_INTEGRATION_INDEX_PATH and method != "GET":
         raise ValueError("Exchange integration status supports GET only")
     if path in {_EXCHANGE_AUTODISCOVER_PATH, _EXCHANGE_FOLDERS_PATH, _EXCHANGE_MAPPING_PATH} and method != "POST":
@@ -1297,7 +1301,7 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
         "knowledge_base_ordering": {"operations": ["read", "reorder"], "risk": "Changes public category or answer order; complete sibling preview and explicit confirmation required."},
         "knowledge_base_attachments": {"operations": ["read", "upload", "delete"], "risk": "Reads attachment metadata or changes files attached to a Knowledge Base answer; upload and deletion require explicit confirmation."},
-        "knowledge_base_manager": {"operations": ["delete"], "risk": "Permanently removes a Knowledge Base and its categories, answers, translations, locales, menus, and permissions."},
+        "knowledge_base_manager": {"operations": ["create", "delete"], "risk": "Creates an active Knowledge Base or permanently removes one and its content."},
         "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
@@ -3380,6 +3384,77 @@ async def zammad_prepare_knowledge_base_lifecycle_change(
 
 
 @mcp.tool()
+async def zammad_prepare_knowledge_base_creation(
+    system_locale_id: int,
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare creation of an active Knowledge Base in one primary locale."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    data = knowledge_base_create_payload(system_locale_id)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base creation requires acknowledge_high_impact=true")
+
+    inventory = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
+    organization = await _setting_snapshot_by_name("organization")
+    product_name = await _setting_snapshot_by_name("product_name")
+
+    def setting_value(snapshot: Mapping[str, Any]) -> str:
+        state = snapshot.get("state_current")
+        value = state.get("value") if isinstance(state, Mapping) else None
+        return value if isinstance(value, str) else ""
+
+    title_base = setting_value(organization).strip() or setting_value(product_name).strip() or "Zammad"
+    title = f"{title_base} Knowledge Base"
+    footer_note = f"© {title_base}"
+    dependencies = [
+        {"path": f"/settings/{_validate_id(setting['id'])}", "fingerprint": _digest(setting)}
+        for setting in (organization, product_name)
+    ]
+    before_ids = [item["id"] for item in inventory["knowledge_bases"]]
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_create__", "operation": "create",
+        "object_id": None, "data": data,
+        "fingerprint": _digest(inventory), "before_ids": before_ids,
+        "dependencies": dependencies, "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+        "preview_after": {
+            "active": True,
+            "system_locale_id": system_locale_id,
+            "primary_locale": True,
+            "default_title": title,
+            "default_footer_note": footer_note,
+            "category_count": 0,
+            "answer_count": 0,
+        },
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "knowledge_base_manager",
+        "operation": "create",
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "before": {"knowledge_base_ids": before_ids},
+        "after": plan["preview_after"],
+        "risk": "Creates an active, initially empty Knowledge Base and a primary locale. Zammad will make it visible according to its current Knowledge Base access settings.",
+        "write_effects": [
+            "Create one Knowledge Base with Zammad's configured default title and style values",
+            "Create the selected System Locale as its primary locale",
+        ],
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
 async def zammad_prepare_knowledge_base_deletion(
     knowledge_base_id: int,
     confirmation_phrase: str,
@@ -4614,6 +4689,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_deletion__":
             current = await _knowledge_base_deletion_snapshot(plan["object_id"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__knowledge_base_create__":
+            current = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
+            current_fingerprint = _digest(current)
         elif plan["resource"] in {"__knowledge_base_attachment_upload__", "__knowledge_base_attachment_delete__"}:
             current = await _knowledge_base_attachments_snapshot(plan["parent_id"], plan.get("answer_id", plan["object_id"]))
             current_fingerprint = _digest(current)
@@ -4648,7 +4726,30 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
-        if resource == "__user_import__":
+        if resource == "__knowledge_base_create__":
+            created = await _request("POST", "/knowledge_bases/manage", data)
+            created_id = created.get("id") if isinstance(created, Mapping) else None
+            if isinstance(created_id, bool) or not isinstance(created_id, int) or created_id <= 0:
+                after_inventory = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
+                new_ids = [
+                    item["id"] for item in after_inventory["knowledge_bases"]
+                    if item["id"] not in plan["before_ids"]
+                ]
+                if len(new_ids) != 1:
+                    raise RuntimeError("Zammad may have created the Knowledge Base; inspect the inventory before retrying")
+                created_id = new_ids[0]
+            created_snapshot = await _get(f"/knowledge_bases/{created_id}")
+            if not isinstance(created_snapshot, Mapping) or created_snapshot.get("id") != created_id:
+                raise RuntimeError("Zammad created the Knowledge Base but its result could not be verified; inspect the inventory before retrying")
+            result = {
+                "created": True,
+                "knowledge_base_id": created_id,
+                "active": created_snapshot.get("active") if isinstance(created_snapshot.get("active"), bool) else True,
+                "system_locale_id": data["kb_locales_attributes"][0]["system_locale_id"],
+                "default_title": plan["preview_after"]["default_title"],
+                "default_footer_note": plan["preview_after"]["default_footer_note"],
+            }
+        elif resource == "__user_import__":
             fresh_preview = await _run_user_import(data["csv_data"], data["separator"], dry_run=True)
             after_preview = await _user_import_inventory_snapshot()
             if after_preview["fingerprint"] != plan["fingerprint"]:
@@ -5170,6 +5271,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__user_import__": "user_imports",
         "__organization_import__": "organization_imports",
         "__knowledge_base_deletion__": "knowledge_base_manager",
+        "__knowledge_base_create__": "knowledge_base_manager",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
         "__knowledge_base_menu__": "knowledge_base_menu_items",
         "__knowledge_base_order__": "knowledge_base_ordering",
@@ -5196,6 +5298,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "A background reset was queued. No job ID is returned. If the outcome is uncertain, inspect agent notification preferences before retrying."
     elif resource == "__knowledge_base_deletion__":
         response_note = "The Knowledge Base and its associated content were permanently deleted. If the outcome is uncertain, inspect the Knowledge Base inventory before retrying."
+    elif resource == "__knowledge_base_create__":
+        response_note = "The Knowledge Base was created. Verify its title, locale, access and content in the inventory before preparing follow-up changes."
     elif resource == "__user_two_factor_action__":
         response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
     elif resource == "__user_unlock__":
