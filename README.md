@@ -148,6 +148,8 @@ Supported workflows include:
 
 `zammad_get_time_accounting_report` accepts `by_activity`, `by_ticket`, `by_customer`, or `by_organization` plus a year, month, and optional row limit (maximum 1000). The Maintenance page's one-shot WebSocket broadcast has no REST endpoint and is not exposed.
 
+The installed Zammad 7.1.2 API cannot create a Knowledge Base: its create route filters the locale field required by the model. A global audit-history endpoint is also unavailable; Zammad's Activity Stream is scoped to the current user and is not an administrative audit log.
+
 Use `zammad_prepare_data_privacy_deletion` to preview one User or Ticket deletion. Apply the returned plan only after explicit approval; Zammad's background job performs the deletion later and recalculates the linked-ticket impact before execution.
 
 Applying a mailbox setup/update plan tests inbound and outbound mail, sends a verification message, saves the channel on success, and starts inbound fetching. Fetched messages can create tickets, so the action is high impact and requires explicit approval.

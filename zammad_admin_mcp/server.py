@@ -1,4 +1,4 @@
-"""Zammad administrative MCP with allowlisted reads and staged writes."""
+"""Zammad administrative MCP."""
 
 from __future__ import annotations
 
@@ -1044,7 +1044,7 @@ async def zammad_get_pgp_key(object_id: int) -> str:
 
 @mcp.tool()
 async def zammad_list_admin_resources() -> str:
-    """List API-backed administration resource names currently allowlisted by this MCP."""
+    """List API-backed administration resource names supported by this server."""
     resources = {name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
         _SPECIAL_CHANNEL: {"operations": ["read", "configure"], "risk": "Read returns sanitized notification channel metadata; configure sends a real test email and saves the active notification channel."},
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
@@ -1480,7 +1480,7 @@ async def zammad_list_roles_expanded() -> str:
 
 @mcp.tool()
 async def zammad_get_admin_object(resource: str, object_id: int) -> str:
-    """Read one object from a fixed allowlisted Zammad admin resource."""
+    """Read one object from a Zammad administration resource."""
     spec = _resource(resource)
     if not spec.item:
         raise ValueError("This resource does not support item reads")
@@ -2978,7 +2978,7 @@ async def zammad_prepare_knowledge_base_settings_change(
     data: dict[str, Any],
     acknowledge_high_impact: bool = False,
 ) -> str:
-    """Prepare an allowlisted Knowledge Base settings update without writing it."""
+    """Prepare a Knowledge Base settings update without writing it."""
     global _PLAN_CLEANER
     if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
         _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
