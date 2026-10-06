@@ -104,6 +104,9 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_publication import project_an
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_schedule_updates as validate_knowledge_base_schedule_updates
 from zammad_admin_mcp.admin_schemas.knowledge_base_publication import validate_transition as validate_knowledge_base_publication_transition
 from zammad_admin_mcp.admin_schemas.knowledge_base_creation import create_payload as knowledge_base_create_payload
+from zammad_admin_mcp.admin_schemas.knowledge_base_translations import preview_after as preview_knowledge_base_translation_after
+from zammad_admin_mcp.admin_schemas.knowledge_base_translations import project_snapshot as project_knowledge_base_translation_snapshot
+from zammad_admin_mcp.admin_schemas.knowledge_base_translations import validate_update as validate_knowledge_base_translation_update
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_collection as project_audit_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_item as project_audit_log
@@ -1302,6 +1305,7 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_ordering": {"operations": ["read", "reorder"], "risk": "Changes public category or answer order; complete sibling preview and explicit confirmation required."},
         "knowledge_base_attachments": {"operations": ["read", "upload", "delete"], "risk": "Reads attachment metadata or changes files attached to a Knowledge Base answer; upload and deletion require explicit confirmation."},
         "knowledge_base_manager": {"operations": ["create", "delete"], "risk": "Creates an active Knowledge Base or permanently removes one and its content."},
+        "knowledge_base_translations": {"operations": ["read", "update"], "risk": "Changes the Knowledge Base title or footer for one locale."},
         "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
@@ -1937,6 +1941,11 @@ async def zammad_list_knowledge_bases() -> str:
     return _json(project_knowledge_base_inventory(assets))
 
 
+async def _knowledge_base_translation_snapshot(knowledge_base_id: int, kb_locale_id: int) -> dict[str, Any]:
+    inventory = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
+    return project_knowledge_base_translation_snapshot(inventory, knowledge_base_id, kb_locale_id)
+
+
 async def _knowledge_base_menu_snapshot(knowledge_base_id: int, location: str) -> dict[str, Any]:
     assets = await _get("/knowledge_bases/manage/init")
     return project_knowledge_base_menu_snapshot(assets, knowledge_base_id, location)
@@ -2093,6 +2102,18 @@ async def zammad_get_knowledge_base_publication_state(
 async def zammad_get_knowledge_base(knowledge_base_id: int) -> str:
     """Read one Knowledge Base configuration object by its Zammad ID."""
     return _json(await _get(f"/knowledge_bases/{_validate_id(knowledge_base_id)}"))
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_translation(
+    knowledge_base_id: int,
+    kb_locale_id: int,
+) -> str:
+    """Read one Knowledge Base title and footer for its configured locale."""
+    kb_id = _validate_id(knowledge_base_id)
+    locale_id = _validate_id(kb_locale_id)
+    snapshot = await _knowledge_base_translation_snapshot(kb_id, locale_id)
+    return _json(snapshot)
 
 
 @mcp.tool()
@@ -3291,6 +3312,59 @@ def _ldap_import_status_summary(job: Any, action: str) -> dict[str, Any]:
         "has_error_detail": bool(result.get("error")),
         "has_info_detail": bool(result.get("info")),
     }
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_translation_change(
+    knowledge_base_id: int,
+    kb_locale_id: int,
+    data: dict[str, Any],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare a Knowledge Base title or footer update for one locale."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    locale_id = _validate_id(kb_locale_id)
+    updates = validate_knowledge_base_translation_update(data)
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base translation changes require acknowledge_high_impact=true")
+    before = await _knowledge_base_translation_snapshot(kb_id, locale_id)
+    after = preview_knowledge_base_translation_after(before, updates)
+    if after["title"] == before["translation"]["title"] and after["footer_note"] == before["translation"]["footer_note"]:
+        raise ValueError("Knowledge Base translation already matches the requested values")
+    request_data = {
+        "translations_attributes": [{"id": before["translation"]["id"], **updates}]
+    }
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_translation__", "operation": "update",
+        "object_id": kb_id, "kb_locale_id": locale_id, "data": request_data,
+        "fingerprint": _digest(before), "before": before,
+        "updated_fields": sorted(updates), "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    return _json({
+        "plan_id": plan_id,
+        "resource": "knowledge_base_translations",
+        "operation": "update",
+        "knowledge_base_id": kb_id,
+        "kb_locale_id": locale_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "before": before,
+        "after": after,
+        "risk": "Changes the Knowledge Base title or footer displayed to users in the selected locale.",
+        "approval_required": True,
+        "note": "No write was performed. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -4692,6 +4766,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_create__":
             current = project_knowledge_base_inventory(await _request("POST", "/knowledge_bases/init", {}))
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__knowledge_base_translation__":
+            current = await _knowledge_base_translation_snapshot(plan["object_id"], plan["kb_locale_id"])
+            current_fingerprint = _digest(current)
         elif plan["resource"] in {"__knowledge_base_attachment_upload__", "__knowledge_base_attachment_delete__"}:
             current = await _knowledge_base_attachments_snapshot(plan["parent_id"], plan.get("answer_id", plan["object_id"]))
             current_fingerprint = _digest(current)
@@ -4748,6 +4825,14 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "system_locale_id": data["kb_locales_attributes"][0]["system_locale_id"],
                 "default_title": plan["preview_after"]["default_title"],
                 "default_footer_note": plan["preview_after"]["default_footer_note"],
+            }
+        elif resource == "__knowledge_base_translation__":
+            await _request("PATCH", f"/knowledge_bases/manage/{plan['object_id']}", data)
+            result = {
+                "updated": True,
+                "knowledge_base_id": plan["object_id"],
+                "kb_locale_id": plan["kb_locale_id"],
+                "fields_updated": plan["updated_fields"],
             }
         elif resource == "__user_import__":
             fresh_preview = await _run_user_import(data["csv_data"], data["separator"], dry_run=True)
@@ -5272,6 +5357,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__organization_import__": "organization_imports",
         "__knowledge_base_deletion__": "knowledge_base_manager",
         "__knowledge_base_create__": "knowledge_base_manager",
+        "__knowledge_base_translation__": "knowledge_base_translations",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
         "__knowledge_base_menu__": "knowledge_base_menu_items",
         "__knowledge_base_order__": "knowledge_base_ordering",
@@ -5300,6 +5386,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The Knowledge Base and its associated content were permanently deleted. If the outcome is uncertain, inspect the Knowledge Base inventory before retrying."
     elif resource == "__knowledge_base_create__":
         response_note = "The Knowledge Base was created. Verify its title, locale, access and content in the inventory before preparing follow-up changes."
+    elif resource == "__knowledge_base_translation__":
+        response_note = "The selected Knowledge Base translation was updated. Read it again to confirm the saved text."
     elif resource == "__user_two_factor_action__":
         response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
     elif resource == "__user_unlock__":

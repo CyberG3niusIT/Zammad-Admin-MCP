@@ -69,6 +69,15 @@ def _named_translation(record: Mapping[str, Any], fields: tuple[str, ...]) -> di
     return result
 
 
+def _knowledge_base_translation(record: Mapping[str, Any]) -> dict[str, Any]:
+    result = _named_translation(record, ("knowledge_base_id", "kb_locale_id", "title"))
+    footer_note = record.get("footer_note")
+    if footer_note is not None and not isinstance(footer_note, str):
+        raise RuntimeError("Zammad returned an invalid Knowledge Base footer note")
+    result["footer_note"] = footer_note
+    return result
+
+
 def project_inventory(value: Any) -> dict[str, Any]:
     if value == []:
         assets: Mapping[str, Any] = {}
@@ -145,7 +154,7 @@ def project_inventory(value: Any) -> dict[str, Any]:
     return {
         "knowledge_bases": knowledge_bases,
         "knowledge_base_translations": [
-            _named_translation(record, ("knowledge_base_id", "kb_locale_id", "title"))
+            _knowledge_base_translation(record)
             for record in _records(assets, _MODELS["knowledge_base_translations"])
         ],
         "locales": locales,

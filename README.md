@@ -182,7 +182,9 @@ Knowledge base:
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
+- `zammad_get_knowledge_base_translation`
 - `zammad_prepare_knowledge_base_creation`
+- `zammad_prepare_knowledge_base_translation_change`
 - `zammad_prepare_knowledge_base_lifecycle_change`
 - `zammad_prepare_knowledge_base_settings_change`
 - `zammad_prepare_knowledge_base_deletion`
@@ -198,6 +200,7 @@ Knowledge base:
 
 Category record reads include the full category assets so translated names and text are available. `translation_id` applies only to answer records.
 Knowledge Base discovery uses Zammad's fixed `POST /knowledge_bases/init` read route. It lists the records available to the authenticated Zammad user, with translated titles and relationship IDs; answer bodies are not requested or returned.
+Locale-specific Knowledge Base title/footer reads and updates bind the KB, locale, translation and current text in a stale-state check before the nested manager update.
 Activation and deactivation use staged plans against the installed `PATCH /knowledge_bases/manage/:id/activate` and `PATCH /knowledge_bases/manage/:id/deactivate` routes. Apply checks that the Knowledge Base record has not changed since preview.
 Public header/footer menu reads are projected to the selected Knowledge Base and location. Updates require complete entry sets for every configured locale, preserve existing IDs, and are rejected when those menu entries or locales change after preview.
 Category and answer ordering reads expose sibling IDs and positions. Reorder plans must include the complete sibling ID set and are rejected if membership or positions change before apply.
@@ -324,7 +327,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The checked-in source registers 65 MCP tools and 86 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and Knowledge Base creation are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
+- The checked-in source registers 67 MCP tools and 86 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and the new Knowledge Base creation/translation tools are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
