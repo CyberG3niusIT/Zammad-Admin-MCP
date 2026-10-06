@@ -335,6 +335,7 @@ Currently outside the generic workflow:
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
 - unrestricted object manager migrations
+- external data source preview: the installed Zammad preview logs request headers and complete response bodies, so credentials and returned data may persist in HTTP logs; do not enable until Zammad provides safe logging for this route
 
 New capabilities should receive dedicated workflows with defined permissions, validation and side effects.
 
