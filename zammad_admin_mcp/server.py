@@ -91,6 +91,8 @@ from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload
 from zammad_admin_mcp.admin_schemas.reports import project_config as project_report_config
 from zammad_admin_mcp.admin_schemas.reports import project_aggregates as project_report_aggregates
 from zammad_admin_mcp.admin_schemas.reports import validate_request as validate_report_request
+from zammad_admin_mcp.admin_schemas.ai_analytics import project_summary as project_ai_analytics_summary
+from zammad_admin_mcp.admin_schemas.ai_analytics import validate_window as validate_ai_analytics_window
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import project_snapshot as project_knowledge_base_attachments_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_attachments import validate_upload as validate_knowledge_base_attachment_upload
@@ -533,6 +535,10 @@ async def _request(
     files: dict[str, tuple[str, bytes, str]] | None = None,
     accept_package_redirect: bool = False,
 ) -> Any:
+    ai_analytics_paths = {
+        "/ai/analytics/download/errors",
+        "/ai/analytics/download/with_usages",
+    }
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
         _EXCHANGE_INTEGRATION_INDEX_PATH, _EXCHANGE_AUTODISCOVER_PATH,
@@ -565,6 +571,7 @@ async def _request(
         "/proxy",
         "/reports/config",
         "/reports/generate",
+        *ai_analytics_paths,
     }
     external_credential_verify_path = bool(re.fullmatch(
         r"/external_credentials/(?:google|microsoft365|microsoft_graph|exchange)/app_verify", path,
@@ -661,6 +668,8 @@ async def _request(
         raise ValueError("Report configuration is available through GET only")
     if path == "/reports/generate" and method != "POST":
         raise ValueError("Report generation is available through POST only")
+    if path in ai_analytics_paths and method != "GET":
+        raise ValueError("AI analytics summaries are available through GET only")
     if external_credential_verify_path and method != "POST":
         raise ValueError("External credential app verification supports POST only")
     if ticket_item_path and method != "GET":
@@ -750,6 +759,7 @@ async def _request(
         method, path, payload, params,
         files=files,
         accept_package_redirect=accept_package_redirect,
+        max_response_bytes=8 * 1024 * 1024 if path in ai_analytics_paths else None,
     )
 
 
@@ -1027,6 +1037,32 @@ async def zammad_generate_report_aggregates(
         ],
         "ticket_ids_returned": False,
         "ticket_assets_returned": False,
+    })
+
+
+@mcp.tool()
+async def zammad_get_ai_analytics_summary(
+    report_type: Literal["errors", "with_usages"],
+    created_after: str,
+    created_before: str,
+) -> str:
+    """Summarize AI provider errors or feedback counts for at most seven days without returning AI content."""
+    start, stop = validate_ai_analytics_window(created_after, created_before)
+    path = f"/ai/analytics/download/{report_type}"
+    params = {
+        "format": "json",
+        "filters[created_after]": start,
+        "filters[created_before]": stop,
+    }
+    try:
+        raw = await _request("GET", path, params=params)
+        summary = project_ai_analytics_summary(raw, report_type)
+    except Exception:
+        raise RuntimeError("Zammad AI analytics could not be summarized; record details were withheld") from None
+    return _json({
+        "created_after": start,
+        "created_before": stop,
+        **summary,
     })
 
 
@@ -1414,6 +1450,7 @@ async def zammad_list_admin_resources() -> str:
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
         "reports": {"operations": ["read_config", "generate_aggregates"], "risk": "Returns scoped report profile metadata and bounded aggregate time series; the report drilldown endpoint is not used."},
+        "ai_analytics": {"operations": ["summarize_errors", "summarize_usage_feedback"], "risk": "Returns content-free AI analytics counts for a seven-day window; provider prompts, context, errors, feedback comments, and user identifiers are withheld."},
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
         "user_imports": {"operations": ["prepare", "apply"], "risk": "Creates or updates users in bulk; imports can change user identity, organization, and role assignments."},

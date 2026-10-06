@@ -145,6 +145,7 @@ Supported workflows include:
 - The system report is available as a redacted summary that excludes setting values, environment data, hardware identifiers, paths, and activity timestamps
 - Object Manager attribute removals, discarding the entire pending queue, and executing the global migration queue use separate previews; discard does not reverse completed migrations, while removal migrations permanently drop the affected database column and its values
 - AI agents and Writing Assistant tools can be read and changed through staged CRUD; AI agent previews show Trigger, Job/Scheduler, and Macro references and reject stale reference sets, while previews also call out automated ticket effects or external provider usage charges
+- `zammad_get_ai_analytics_summary` returns only error or feedback totals for a required window of at most seven days; source responses are capped at 8 MiB and AI content, context, diagnostics, comments, and user details are not returned
 - Active sessions can be listed without returning session cookie IDs, and one session can be ended through a high-impact staged plan
 - Existing Data Privacy deletion tasks can be reviewed through a projection that excludes confirmation phrases and internal errors; user or ticket deletion tasks use a high-impact staged plan and run asynchronously in Zammad
 - Maintenance and Time Accounting settings use the staged Settings workflow; Time Accounting activity types support staged create/update, and monthly reports are available with bounded, privacy-projected results
@@ -332,7 +333,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The checked-in source registers 71 MCP tools and 89 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange, Knowledge Base, external credential verification, and reporting workflows are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
+- The checked-in source registers 72 MCP tools and 90 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange, Knowledge Base, external credential verification, reporting, and AI analytics workflows are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed

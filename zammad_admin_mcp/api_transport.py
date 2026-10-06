@@ -41,6 +41,7 @@ async def request(
     params: dict[str, Any] | None = None,
     files: dict[str, tuple[str, bytes, str]] | None = None,
     accept_package_redirect: bool = False,
+    max_response_bytes: int | None = None,
 ) -> Any:
     knowledge_base_attachment_upload = (
         method == "POST"
@@ -66,7 +67,25 @@ async def request(
             request_options["json"] = payload
         else:
             request_options["files"] = files
-        response = await client.request(method, path.lstrip("/"), **request_options)
+        if max_response_bytes is None:
+            response = await client.request(method, path.lstrip("/"), **request_options)
+        else:
+            if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int) or max_response_bytes < 1:
+                raise ValueError("Response size limit must be a positive integer")
+            async with client.stream(method, path.lstrip("/"), **request_options) as streamed:
+                if streamed.is_redirect:
+                    raise RuntimeError("Zammad redirected an API request; check ZAMMAD_URL")
+                if streamed.status_code >= 400:
+                    raise RuntimeError(f"Zammad API request failed with HTTP {streamed.status_code}; check endpoint, payload, and token permissions")
+                content = bytearray()
+                async for chunk in streamed.aiter_bytes():
+                    if len(content) + len(chunk) > max_response_bytes:
+                        raise RuntimeError("Zammad API response exceeded the configured size limit")
+                    content.extend(chunk)
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Zammad returned a non-JSON API response") from exc
     if response.is_redirect:
         redirect = urlsplit(response.headers.get("location", ""))
         if (
