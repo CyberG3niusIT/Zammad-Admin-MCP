@@ -35,6 +35,7 @@ from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_group_p
 from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_probe_payload as validate_oauth_email_probe_payload
 from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
 from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
+from zammad_admin_mcp.admin_schemas.exchange import project_exchange_configuration
 from zammad_admin_mcp.admin_schemas.exchange import project_exchange_integration_status
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
 from zammad_admin_mcp.admin_schemas.ldap_actions import materialize_payload as materialize_ldap_action
@@ -301,11 +302,14 @@ def _project_admin_settings(value: Any) -> Any:
     if isinstance(value, list):
         return [
             project_auth_setting(item) if isinstance(item, Mapping) and is_auth_credential_setting(item.get("name"))
+            else project_exchange_configuration(item) if isinstance(item, Mapping) and item.get("name") == "exchange_config"
             else _project_settings(item)
             for item in value
         ]
     if isinstance(value, Mapping) and is_auth_credential_setting(value.get("name")):
         return project_auth_setting(value)
+    if isinstance(value, Mapping) and value.get("name") == "exchange_config":
+        return project_exchange_configuration(value)
     return _project_settings(value)
 
 

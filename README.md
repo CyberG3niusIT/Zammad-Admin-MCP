@@ -94,6 +94,7 @@ Administrative operations are not executed merely because the MCP server is conn
 - object inspection
 - knowledge base access
 - Exchange OAuth integration status
+- Exchange settings reads retain connection and mapping configuration while masking credentials and omitting folder names and contact-derived examples
 - paginated collection reads
 
 ## Controlled Changes
