@@ -1043,7 +1043,7 @@ async def zammad_get_pgp_key(object_id: int) -> str:
 @mcp.tool()
 async def zammad_list_admin_resources() -> str:
     """List API-backed administration resource names currently allowlisted by this MCP."""
-    return _json({name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
+    resources = {name: {"operations": ["read", *sorted(spec.operations)], "risk": spec.risk} for name, spec in _RESOURCES.items()} | {
         _SPECIAL_CHANNEL: {"operations": ["read", "configure"], "risk": "Read returns sanitized notification channel metadata; configure sends a real test email and saves the active notification channel."},
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
@@ -1078,7 +1078,8 @@ async def zammad_list_admin_resources() -> str:
         "pgp_keys": {"operations": ["read", "create", "delete"], "risk": "Manages PGP private keys; key material and passphrases are never returned."},
         "smime_certificates": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME certificates; deletion also removes an associated private key."},
         "smime_private_keys": {"operations": ["read", "create", "delete"], "risk": "Manages S/MIME private keys; key material and passphrases are never returned."},
-    })
+    }
+    return json.dumps(resources, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 @mcp.tool()

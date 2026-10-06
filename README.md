@@ -171,11 +171,17 @@ Knowledge base:
 - `zammad_get_knowledge_base_menu_items`
 - `zammad_get_knowledge_base_order`
 - `zammad_get_knowledge_base_publication_state`
+- `zammad_get_knowledge_base_attachments`
 - `zammad_list_knowledge_base_categories`
 - `zammad_get_knowledge_base_permissions`
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
 - `zammad_prepare_knowledge_base_lifecycle_change`
+- `zammad_prepare_knowledge_base_settings_change`
+- `zammad_prepare_knowledge_base_deletion`
+- `zammad_prepare_knowledge_base_attachment_upload`
+- `zammad_prepare_knowledge_base_attachment_delete`
+- `zammad_prepare_knowledge_base_record_change`
 - `zammad_prepare_knowledge_base_menu_change`
 - `zammad_prepare_knowledge_base_order_change`
 - `zammad_prepare_knowledge_base_publication_transition`
@@ -224,6 +230,12 @@ Object Manager migrations:
 - `zammad_prepare_object_manager_migrations`
 - `zammad_prepare_object_manager_discard_changes`
 
+LDAP operations:
+
+- `zammad_get_ldap_import_status`
+- `zammad_prepare_ldap_connection_action`
+- `zammad_prepare_ldap_import_action`
+
 AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_agents`, or `ai_text_tools`, plus the staged `zammad_prepare_admin_change` operations for the writable resource names.
 
 Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
@@ -234,12 +246,13 @@ Package operations can write executable code or reverse database migrations. Rev
 
 Compatibility readers:
 
-- groups
-- roles
-- calendars
-- SLAs
-- triggers
-- ticket states
+- `zammad_list_groups`
+- `zammad_list_roles`
+- `zammad_list_roles_expanded`
+- `zammad_list_calendars`
+- `zammad_list_slas`
+- `zammad_list_triggers`
+- `zammad_list_ticket_states`
 
 ---
 
@@ -296,7 +309,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- After the authorized App Server reload on 2026-10-06, the live registry advertised 73 API-backed resource kinds, including user CSV import and user history. The source now defines 75 resource kinds and adds organization history, organization CSV import, and a staged Object Manager discard plan; these changes await the next MCP reload.
+- After the user-authorized App Server restart on 2026-10-06, this session exposes 65 Zammad MCP tools. The read-only `zammad_list_admin_resources` call currently returns 81 server-allowlisted resource kinds; this registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
