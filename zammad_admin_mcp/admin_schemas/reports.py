@@ -1,7 +1,7 @@
 """Safe report configuration and aggregate projections for Zammad reports."""
 
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, timedelta
 from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -47,6 +47,7 @@ def project_config(value: Any) -> dict[str, Any]:
                 "name": name,
                 "display": display,
                 "selected_by_default": backend.get("selected") is True,
+                "data_download": backend.get("dataDownload") is True,
             })
         projected_metrics[key] = {
             "name": key,
@@ -173,6 +174,110 @@ def validate_request(
             raise ValueError("year reports cannot start in the future")
 
     return body, _MAX_BUCKETS[time_range], available
+
+
+def validate_ticket_preview_request(
+    config: Mapping[str, Any],
+    *,
+    profile_id: Any,
+    metric: Any,
+    backend: Any,
+    time_range: str,
+    year: Any = None,
+    month: Any = None,
+    day: Any = None,
+    week: Any = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    if time_range not in {"realtime", "day", "week"}:
+        raise ValueError("ticket previews support only realtime, day, and week periods")
+    projected_metrics = config["metrics"]
+    if not isinstance(metric, str) or metric not in projected_metrics:
+        raise ValueError("metric must be selected from the current Zammad report configuration")
+    backend_config = next(
+        (item for item in projected_metrics[metric]["backends"] if item["name"] == backend),
+        None,
+    )
+    if backend_config is None or backend_config.get("data_download") is not True:
+        raise ValueError("backend must be available for ticket details in the current Zammad report configuration")
+
+    payload, _, labels = validate_request(
+        config,
+        profile_id=profile_id,
+        metric=metric,
+        backends=[backend],
+        time_range=time_range,
+        year=year,
+        month=month,
+        day=day,
+        week=week,
+    )
+    earliest = date.today() - timedelta(days=6)
+    if time_range == "day" and date(year, month, day) < earliest:
+        raise ValueError("ticket previews are limited to the last seven days")
+    if time_range == "week" and date.fromisocalendar(year, week, 1) < earliest:
+        raise ValueError("ticket previews are limited to the last seven days")
+    payload.pop("backends")
+    payload["downloadBackendSelected"] = backend
+    return payload, labels
+
+
+def project_ticket_preview(
+    value: Any,
+    *,
+    limit: int = 100,
+) -> dict[str, Any]:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise ValueError("limit must be between 1 and 100")
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Zammad did not return report ticket details")
+    count = value.get("count")
+    ticket_ids = value.get("ticket_ids")
+    assets = value.get("assets")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        raise RuntimeError("Zammad returned an invalid report ticket count")
+    if not isinstance(ticket_ids, list):
+        raise RuntimeError("Zammad returned an invalid report ticket list")
+    if any(isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in ticket_ids):
+        raise RuntimeError("Zammad returned invalid report ticket identifiers")
+    if not isinstance(assets, Mapping):
+        raise RuntimeError("Zammad returned invalid report ticket assets")
+    ticket_assets = assets.get("Ticket", {})
+    if not isinstance(ticket_assets, Mapping) or (ticket_ids and not ticket_assets):
+        raise RuntimeError("Zammad returned invalid report ticket assets")
+
+    records: list[dict[str, Any]] = []
+    for ticket_id in ticket_ids[:limit]:
+        ticket = ticket_assets.get(ticket_id, ticket_assets.get(str(ticket_id)))
+        if not isinstance(ticket, Mapping):
+            continue
+        title = ticket.get("title")
+        created_at = ticket.get("created_at")
+        number = ticket.get("number")
+        state_id = ticket.get("state_id")
+        group_id = ticket.get("group_id")
+        if title is not None and not isinstance(title, str):
+            raise RuntimeError("Zammad returned an invalid report ticket title")
+        if created_at is not None and not isinstance(created_at, str):
+            raise RuntimeError("Zammad returned an invalid report ticket timestamp")
+        if number is not None and (isinstance(number, bool) or not isinstance(number, (int, str))):
+            raise RuntimeError("Zammad returned an invalid report ticket number")
+        if any(item is not None and (isinstance(item, bool) or not isinstance(item, int) or item <= 0) for item in (state_id, group_id)):
+            raise RuntimeError("Zammad returned invalid report ticket relationship IDs")
+        records.append({
+            "id": ticket_id,
+            "number": number,
+            "title": title[:500] if title is not None else None,
+            "title_truncated": title is not None and len(title) > 500,
+            "state_id": state_id,
+            "group_id": group_id,
+            "created_at": created_at,
+        })
+    return {
+        "matching_count": count,
+        "returned_count": len(records),
+        "truncated": count > len(records),
+        "records": records,
+    }
 
 
 def project_aggregates(

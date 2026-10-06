@@ -91,6 +91,8 @@ from zammad_admin_mcp.admin_schemas.time_accounting import validate_type_payload
 from zammad_admin_mcp.admin_schemas.reports import project_config as project_report_config
 from zammad_admin_mcp.admin_schemas.reports import project_aggregates as project_report_aggregates
 from zammad_admin_mcp.admin_schemas.reports import validate_request as validate_report_request
+from zammad_admin_mcp.admin_schemas.reports import project_ticket_preview as project_report_ticket_preview
+from zammad_admin_mcp.admin_schemas.reports import validate_ticket_preview_request as validate_report_ticket_preview_request
 from zammad_admin_mcp.admin_schemas.ai_analytics import project_summary as project_ai_analytics_summary
 from zammad_admin_mcp.admin_schemas.ai_analytics import validate_window as validate_ai_analytics_window
 from zammad_admin_mcp.admin_schemas.knowledge_base_assets import project_inventory as project_knowledge_base_inventory
@@ -571,6 +573,7 @@ async def _request(
         "/proxy",
         "/reports/config",
         "/reports/generate",
+        "/reports/sets",
         *ai_analytics_paths,
     }
     external_credential_verify_path = bool(re.fullmatch(
@@ -668,6 +671,8 @@ async def _request(
         raise ValueError("Report configuration is available through GET only")
     if path == "/reports/generate" and method != "POST":
         raise ValueError("Report generation is available through POST only")
+    if path == "/reports/sets" and method != "POST":
+        raise ValueError("Report ticket previews support POST only")
     if path in ai_analytics_paths and method != "GET":
         raise ValueError("AI analytics summaries are available through GET only")
     if external_credential_verify_path and method != "POST":
@@ -759,7 +764,7 @@ async def _request(
         method, path, payload, params,
         files=files,
         accept_package_redirect=accept_package_redirect,
-        max_response_bytes=8 * 1024 * 1024 if path in ai_analytics_paths else None,
+        max_response_bytes=8 * 1024 * 1024 if path in ai_analytics_paths or path == "/reports/sets" else None,
     )
 
 
@@ -1037,6 +1042,50 @@ async def zammad_generate_report_aggregates(
         ],
         "ticket_ids_returned": False,
         "ticket_assets_returned": False,
+    })
+
+
+@mcp.tool()
+async def zammad_get_report_ticket_preview(
+    profile_id: int,
+    metric: str,
+    backend: str,
+    time_range: Literal["realtime", "day", "week"],
+    year: int | None = None,
+    month: int | None = None,
+    day: int | None = None,
+    week: int | None = None,
+) -> str:
+    """Read a role-scoped report ticket preview, capped to recent periods and 100 projected records."""
+    try:
+        current = project_report_config(await _request("GET", "/reports/config"))
+        payload, backend_labels = validate_report_ticket_preview_request(
+            current,
+            profile_id=profile_id,
+            metric=metric,
+            backend=backend,
+            time_range=time_range,
+            year=year,
+            month=month,
+            day=day,
+            week=week,
+        )
+    except ValueError:
+        raise
+    except Exception:
+        raise RuntimeError("Zammad report configuration could not be validated") from None
+    try:
+        raw = await _request("POST", "/reports/sets", payload)
+        result = project_report_ticket_preview(raw, limit=100)
+    except Exception:
+        raise RuntimeError("Zammad report ticket preview could not be generated; detailed ticket assets were withheld") from None
+    selected_profile = next(item for item in current["profiles"] if item["id"] == profile_id)
+    return _json({
+        "profile": {"id": profile_id, "name": selected_profile["name"]},
+        "metric": metric,
+        "backend": {"name": backend, "display": backend_labels[backend]},
+        "time_range": time_range,
+        **result,
     })
 
 
@@ -1449,7 +1498,8 @@ async def zammad_list_admin_resources() -> str:
         "data_privacy_tasks": {"operations": ["read", "queue_deletion"], "risk": "Queues asynchronous, irreversible user or ticket deletion; task impact may change before background execution."},
         "oauth_applications": {"operations": ["read", "create", "update", "delete", "issue_token"], "risk": "Changes OAuth client credentials or issues a bearer token for the current Zammad user."},
         "time_accounting_reports": {"operations": ["read"], "risk": "Returns up to 1000 redacted Time Accounting rows for one month."},
-        "reports": {"operations": ["read_config", "generate_aggregates"], "risk": "Returns scoped report profile metadata and bounded aggregate time series; the report drilldown endpoint is not used."},
+        "reports": {"operations": ["read_config", "generate_aggregates"], "risk": "Returns scoped report profile metadata and bounded aggregate time series without ticket records."},
+        "report_ticket_previews": {"operations": ["read"], "risk": "Returns up to 100 role-scoped ticket summaries from a recent report window; titles may contain user-supplied content."},
         "ai_analytics": {"operations": ["summarize_errors", "summarize_usage_feedback"], "risk": "Returns content-free AI analytics counts for a seven-day window; provider prompts, context, errors, feedback comments, and user identifiers are withheld."},
         "calendar_timezones": {"operations": ["read"], "risk": "Returns available timezone choices for calendar configuration."},
         "ticket_agent_notifications": {"operations": ["apply_to_all"], "risk": "Queues a background job that replaces notification preferences for every Zammad user with the ticket.agent permission."},
