@@ -123,6 +123,7 @@ Supported workflows include:
 - `zammad_list_calendar_timezones` lists the timezone choices used by Zammad's calendar settings
 - staged inbound mailbox setup/update, enable/disable, deletion, and group reassignment
 - jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
+- External credential app setup can be checked through a separately approved fixed-provider action for Google, Microsoft 365, Microsoft Graph, and Exchange. It does not save credentials or authenticate an account; secret inputs use process environment references and the result omits credentials, OAuth URLs, state values, and raw diagnostics
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - existing Microsoft 365 and Microsoft Graph mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; probes return only status and message counts, while OAuth account linking remains in Zammad's browser flow
 - Exchange autodiscovery, folder discovery, and field mapping use high-impact prepare/apply plans; mapping outputs expose field names but never contact examples. Import status is projected to job metadata and aggregate counts, while dry runs and imports use separate high-impact plans

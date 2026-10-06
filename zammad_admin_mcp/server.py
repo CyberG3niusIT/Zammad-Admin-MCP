@@ -207,7 +207,11 @@ _RESOURCES: dict[str, Resource] = {
     "postmaster_filters": Resource("/postmaster_filters", risk="Changes inbound email processing, ticket routing, and actions.", high_impact=True),
     "ldap_sources": Resource("/ldap_sources", risk="LDAP settings affect authentication and user synchronization; bind passwords are set only from process environment references.", high_impact=True),
     "chats": Resource("/chats", risk="Chat configuration changes availability; deletion also removes chat sessions.", high_impact=True),
-    "external_credentials": Resource("/external_credentials", risk="Replaces connected provider settings or secrets and may affect external integrations.", high_impact=True),
+    "external_credentials": Resource(
+        "/external_credentials", operations=frozenset({"create", "update", "delete", "verify"}),
+        risk="Replaces connected provider settings or secrets and may affect external integrations; verification may contact the provider.",
+        high_impact=True,
+    ),
     "translations": Resource(
         "/translations/customized", operations=frozenset({"upsert", "reset", "delete"}),
         risk="Changes translated text displayed throughout Zammad for a locale.", high_impact=True, item=False,
@@ -557,6 +561,9 @@ async def _request(
         "/http_logs",
         "/proxy",
     }
+    external_credential_verify_path = bool(re.fullmatch(
+        r"/external_credentials/(?:google|microsoft365|microsoft_graph|exchange)/app_verify", path,
+    ))
     email_group_path = bool(re.fullmatch(r"/channels_email_group/\d+", path))
     whatsapp_action_path = bool(re.fullmatch(r"/channels/admin/whatsapp/\d+/(?:enable|disable)", path))
     microsoft365_group_path = bool(re.fullmatch(r"/channels_microsoft365_group/\d+", path))
@@ -614,6 +621,7 @@ async def _request(
     user_two_factor_path = bool(re.fullmatch(r"/users/\d+/admin_two_factor/(?:enabled_authentication_methods|remove_authentication_method|remove_all_authentication_methods)", path))
     http_log_facility_path = path in _HTTP_LOG_FACILITY_PATHS.values()
     fixed_special_paths = (
+        external_credential_verify_path,
         email_group_path, whatsapp_action_path, microsoft365_group_path,
         microsoft_graph_action_path, microsoft_graph_group_path, microsoft365_verify_path,
         microsoft_graph_verify_path, microsoft365_inbound_path, microsoft_graph_inbound_path,
@@ -644,6 +652,8 @@ async def _request(
         raise ValueError("Unsupported Zammad API resource")
     if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("Unsupported Zammad API method")
+    if external_credential_verify_path and method != "POST":
+        raise ValueError("External credential app verification supports POST only")
     if ticket_item_path and method != "GET":
         raise ValueError("Ticket deletion previews support GET only")
     if ticket_selector_path and method != "POST":
@@ -3162,6 +3172,8 @@ async def zammad_get_knowledge_base_record(
 
 
 async def _snapshot(resource: str, operation: str, object_id: int | None) -> Any:
+    if resource == "external_credentials" and operation == "verify":
+        return await _get(_resource(resource).path)
     if resource in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels"}:
         return await _get(_SPECIAL_READ_PATH)
     if resource == "facebook_channels":
@@ -4131,7 +4143,7 @@ async def _clean_expired_plans() -> None:
 @mcp.tool()
 async def zammad_prepare_admin_change(
     resource: str,
-    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign", "test", "preload", "rollback_migration", "reset"],
+    operation: Literal["create", "update", "delete", "configure", "enable", "disable", "reassign", "test", "preload", "rollback_migration", "reset", "verify"],
     data: dict[str, Any] | None = None,
     object_id: int | None = None,
     acknowledge_high_impact: bool = False,
@@ -4299,6 +4311,19 @@ async def zammad_prepare_admin_change(
     elif resource == "external_credentials" and operation in {"create", "update"}:
         validate_external_credentials_payload(operation, data)
         data, preview_data = materialize_external_credentials(data)
+    elif resource == "external_credentials" and operation == "verify":
+        if object_id is not None:
+            raise ValueError("external credential verification does not accept object_id")
+        if not acknowledge_high_impact:
+            raise ValueError("External credential verification requires acknowledge_high_impact=true")
+        validate_external_credentials_payload("update", data)
+        provider = data.get("name") if isinstance(data, Mapping) else None
+        if provider not in {"google", "microsoft365", "microsoft_graph", "exchange"}:
+            raise ValueError("verification supports only Google, Microsoft 365, Microsoft Graph, or Exchange")
+        credentials = data.get("credentials")
+        if isinstance(credentials, Mapping) and {"provider", "controller", "action"}.intersection(credentials):
+            raise ValueError("provider, controller, and action cannot be set in verification credentials")
+        data, preview_data = materialize_external_credentials(data)
     elif resource in {"ai_agents", "ai_text_tools"} and operation in {"create", "update"}:
         data, preview_data = validate_ai_payload(resource, operation, data)
     elif resource == "oauth_applications" and operation in {"create", "update"}:
@@ -4322,6 +4347,14 @@ async def zammad_prepare_admin_change(
         validate_postmaster_filter_payload(operation, data)
 
     before = ldap_before if ldap_before is not None else auth_settings_before if auth_settings_before is not None else await _snapshot(resource, operation, object_id)
+    if resource == "external_credentials" and operation == "verify":
+        assets = before.get("assets", {}) if isinstance(before, Mapping) else {}
+        credential_assets = assets.get("ExternalCredential", {}) if isinstance(assets, Mapping) else {}
+        configured_providers = sorted(
+            item.get("name") for item in credential_assets.values()
+            if isinstance(item, Mapping) and isinstance(item.get("name"), str)
+        ) if isinstance(credential_assets, Mapping) else []
+        before_preview = {"configured_providers": configured_providers}
     if resource == "settings" and operation == "reset":
         if not isinstance(before, Mapping) or not isinstance(before.get("name"), str):
             raise RuntimeError("The Zammad API did not return a setting snapshot")
@@ -4684,13 +4717,22 @@ async def zammad_prepare_admin_change(
             "requested_configuration": preview_data,
             "side_effects_on_apply": ["send a real SMTP test email", "save the notification channel on success"],
         }
+    elif resource == "external_credentials" and operation == "verify":
+        provider = data["name"]
+        after = {
+            "provider": provider,
+            "credential_fields": sorted(data["credentials"]),
+            "secret_values_returned": False,
+            "verification_scope": "Zammad checks required inputs and constructs OAuth authorization data; it does not authenticate an account.",
+            "side_effects_on_apply": ["submit app configuration to Zammad; no credential is saved"],
+        }
     elif operation in {"update", "configure"}:
         after = _merge_preview(before, preview_data or {})
     else:
         after = None
     if resource not in {_SPECIAL_CHANNEL, _EMAIL_ACCOUNT_RESOURCE, "email_channels", "facebook_channels", "product_logo", "google_channels", "microsoft365_channels", "microsoft_graph_channels", "time_accounting_types", *_MESSAGE_CHANNEL_RESOURCES} and not (
         resource == "user_access_tokens" and operation == "create"
-    ):
+    ) and not (resource == "external_credentials" and operation == "verify"):
         before_preview = before
     if resource == "settings":
         before_preview = _project_admin_settings(before_preview)
@@ -4712,10 +4754,20 @@ async def zammad_prepare_admin_change(
         _PLANS[plan_id] = plan
 
     write_effects: list[str] = []
-    if resource == "external_credentials" and operation in {"create", "update"} and isinstance(preview_data, Mapping):
+    if resource == "external_credentials" and operation in {"create", "update", "verify"} and isinstance(preview_data, Mapping):
         credentials_preview = preview_data.get("credentials")
-        if isinstance(credentials_preview, Mapping) and credentials_preview.get("client_secret") == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]":
-            write_effects.append("Set the external provider client secret from a process environment reference")
+        if isinstance(credentials_preview, Mapping):
+            secret_present = any(
+                value == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]"
+                for key, value in credentials_preview.items()
+                if key in {"client_secret", "application_secret"}
+            )
+            if secret_present:
+                write_effects.append(
+                    "Use the external provider secret from a process environment reference"
+                    if operation == "verify"
+                    else "Set the external provider secret from a process environment reference"
+                )
     if resource == "ldap_sources" and operation in {"create", "update"} and isinstance(preview_data, Mapping):
         preferences_preview = preview_data.get("preferences")
         if isinstance(preferences_preview, Mapping):
@@ -4881,7 +4933,20 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
-        if resource == "__knowledge_base_create__":
+        if resource == "external_credentials" and operation == "verify":
+            provider = data["name"]
+            verification = await _request(
+                "POST", f"/external_credentials/{provider}/app_verify", data["credentials"],
+            )
+            accepted = isinstance(verification, Mapping) and isinstance(verification.get("attributes"), Mapping)
+            result = {
+                "provider": provider,
+                "accepted_by_zammad": accepted,
+                "provider_account_authenticated": False,
+                "credential_values_returned": False,
+                "diagnostics_returned": False,
+            }
+        elif resource == "__knowledge_base_create__":
             created = await _request("POST", "/knowledge_bases/manage", data)
             created_id = created.get("id") if isinstance(created, Mapping) else None
             if isinstance(created_id, bool) or not isinstance(created_id, int) or created_id <= 0:
@@ -5482,7 +5547,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__knowledge_base_publication_transition__": "knowledge_base_publication",
         "__knowledge_base_publication_schedule__": "knowledge_base_publication",
     }.get(resource, resource)
-    if resource == "__ldap_connection_action__":
+    if resource == "external_credentials" and operation == "verify":
+        response_note = "Plan consumed. Zammad accepted or rejected the app configuration fields; no credentials were saved and no account was authenticated. OAuth URLs, states, secrets, and raw diagnostics were omitted."
+    elif resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
     elif resource == "__exchange_connection_action__":
         response_note = "Plan consumed. No Exchange configuration was saved. The response omits credentials and contact examples."
