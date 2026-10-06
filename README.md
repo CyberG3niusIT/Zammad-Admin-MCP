@@ -125,6 +125,7 @@ Supported workflows include:
 - jobs, LDAP sources, public links, chats, postmaster filters, and external credentials have staged CRUD with explicit high-impact previews; LDAP discovery and bind checks are separately staged, and bind passwords and external credential secrets use process environment references
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - existing Microsoft 365 and Microsoft Graph mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; probes return only status and message counts, while OAuth account linking remains in Zammad's browser flow
+- Exchange import status is projected to job metadata and aggregate counts; dry runs and imports use separate high-impact prepare/apply plans, and dry-run contact samples and job payloads are never returned
 - existing Google mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - WhatsApp channel updates can retain the configured access token and app secret when those fields are omitted; replacements must use process environment references
 - User CSV import uses Zammad's transactional `try=true` preview, a short-lived in-memory plan, a complete user-inventory stale check, and explicit high-impact approval before import; imported records and row error text are never returned
@@ -241,6 +242,13 @@ LDAP operations:
 - `zammad_prepare_ldap_connection_action`
 - `zammad_prepare_ldap_import_action`
 
+Exchange import operations:
+
+- `zammad_get_exchange_import_status`
+- `zammad_prepare_exchange_import_action`
+
+Exchange dry runs create a persistent Zammad job and read real mailbox contact data. Import starts may create or update users. Both are explicit staged actions; OAuth setup and connection discovery remain in Zammad's browser-based flow.
+
 AI administration uses `zammad_list_admin_resource` with `ai_agent_types`, `ai_agents`, or `ai_text_tools`, plus the staged `zammad_prepare_admin_change` operations for the writable resource names.
 
 Session administration uses the `sessions` resource and `zammad_prepare_session_action` for staged session termination.
@@ -314,7 +322,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- This Codex session still exposes 65 Zammad MCP tools and 81 resource kinds. The repository adds audit-log search and Exchange integration status, bringing the source registry to 67 tools and 83 resource kinds after the MCP host reloads; this registry does not imply complete Zammad UI coverage.
+- This Codex session still exposes 65 Zammad MCP tools and 81 resource kinds. The repository adds audit-log search plus Exchange status and staged import tools, bringing the source registry to 69 tools and 84 resource kinds after the MCP host reloads; this registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed

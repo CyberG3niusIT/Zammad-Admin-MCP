@@ -36,6 +36,9 @@ from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_probe_p
 from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
 from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
 from zammad_admin_mcp.admin_schemas.exchange import project_exchange_configuration
+from zammad_admin_mcp.admin_schemas.exchange import prepare_exchange_dry_run_payload
+from zammad_admin_mcp.admin_schemas.exchange import exchange_endpoint_host
+from zammad_admin_mcp.admin_schemas.exchange import project_exchange_import_status
 from zammad_admin_mcp.admin_schemas.exchange import project_exchange_integration_status
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
 from zammad_admin_mcp.admin_schemas.ldap_actions import materialize_payload as materialize_ldap_action
@@ -252,6 +255,8 @@ _MESSAGING_CHANNELS_RESOURCE = "messaging_channels"
 _EMAIL_ACCOUNT_RESOURCE = "email_account"
 _EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
 _EXCHANGE_INTEGRATION_INDEX_PATH = "/integration/exchange/index"
+_EXCHANGE_IMPORT_DRY_RUN_PATH = "/integration/exchange/job_try"
+_EXCHANGE_IMPORT_START_PATH = "/integration/exchange/job_start"
 _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
 _EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
 _EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
@@ -513,7 +518,8 @@ async def _request(
 ) -> Any:
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
-        _EXCHANGE_INTEGRATION_INDEX_PATH,
+        _EXCHANGE_INTEGRATION_INDEX_PATH, _EXCHANGE_IMPORT_DRY_RUN_PATH,
+        _EXCHANGE_IMPORT_START_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
         "/channels_telegram_enable", "/channels_telegram_disable",
@@ -655,6 +661,10 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == _EXCHANGE_INTEGRATION_INDEX_PATH and method != "GET":
         raise ValueError("Exchange integration status supports GET only")
+    if path == _EXCHANGE_IMPORT_DRY_RUN_PATH and method not in {"GET", "POST"}:
+        raise ValueError("Exchange dry-run jobs support GET status and POST submission only")
+    if path == _EXCHANGE_IMPORT_START_PATH and method not in {"GET", "POST"}:
+        raise ValueError("Exchange import jobs support GET status and POST submission only")
     if path == "/knowledge_bases/init" and method != "POST":
         raise ValueError("Knowledge Base inventory uses its read-only initialization route")
     if path == "/knowledge_bases/manage/init" and method != "GET":
@@ -715,6 +725,103 @@ async def zammad_get_exchange_integration_status() -> str:
     """Show whether an Exchange OAuth record and an application registration are present."""
     result = await _get(_EXCHANGE_INTEGRATION_INDEX_PATH)
     return _json(project_exchange_integration_status(result))
+
+
+@mcp.tool()
+async def zammad_get_exchange_import_status(action: Literal["dry_run", "start"]) -> str:
+    """Read Exchange import job status and aggregate counts without returning job payloads or contact data."""
+    path = _EXCHANGE_IMPORT_DRY_RUN_PATH if action == "dry_run" else _EXCHANGE_IMPORT_START_PATH
+    params = {"finished": "true"} if action == "dry_run" else None
+    job = await _get(path, params)
+    return _json(project_exchange_import_status(job, action))
+
+
+@mcp.tool()
+async def zammad_prepare_exchange_import_action(
+    action: Literal["dry_run", "start"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare an Exchange dry run or import job; neither starts until the plan is applied."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if action not in {"dry_run", "start"}:
+        raise ValueError("Unsupported Exchange import action")
+    if not acknowledge_high_impact:
+        raise ValueError("Exchange import actions require acknowledge_high_impact=true")
+
+    snapshot = await _exchange_import_snapshot()
+    if action == "start" and snapshot["enabled"] is not True:
+        raise ValueError("The Exchange integration must be enabled before starting an import")
+    if await _exchange_import_pending("dry_run") or await _exchange_import_pending("start"):
+        raise ValueError("An Exchange job is already queued or running")
+
+    validated_payload = prepare_exchange_dry_run_payload(snapshot["config"])
+    oauth_access_token = snapshot["oauth"].get("access_token")
+    if validated_payload["auth_type"] == "oauth" and (not isinstance(oauth_access_token, str) or not oauth_access_token):
+        raise ValueError("The Exchange OAuth connection does not have an access token")
+    payload = validated_payload if action == "dry_run" else {}
+    config_summary = {
+        "endpoint_host": exchange_endpoint_host(validated_payload["endpoint"]),
+        "selected_folder_count": len(validated_payload["folders"]),
+        "mapped_attribute_count": len(validated_payload["attributes"]),
+        "tls_certificate_verification": "disabled" if validated_payload["disable_ssl_verify"] else "enabled",
+    }
+    fingerprint = _crypto_digest(snapshot)
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__exchange_import_action__",
+        "operation": action,
+        "data": payload,
+        "fingerprint": fingerprint,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    if action == "dry_run":
+        side_effects = [
+            "Connect to the configured Exchange service and read selected mailbox folders",
+            "Create a persistent Zammad dry-run ImportJob",
+            "Do not apply the imported user changes",
+        ]
+        risk = "The dry run reads real mailbox contact data and stores an asynchronous ImportJob in Zammad."
+        after = {
+            "action": action,
+            **config_summary,
+            "credentials_returned": False,
+        }
+    else:
+        side_effects = [
+            "Queue an Exchange import job",
+            "The importer may create or update Zammad user records using Exchange mailbox data",
+        ]
+        risk = "The background import may create or update Zammad users from Exchange mailbox data."
+        after = {"action": action, **config_summary, "credentials_returned": False}
+    if validated_payload["disable_ssl_verify"]:
+        side_effects.append("The saved Exchange configuration disables TLS certificate verification")
+
+    return _json({
+        "plan_id": plan_id,
+        "resource": "exchange_import_actions",
+        "operation": action,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": fingerprint,
+        "before": {
+            "integration_enabled": snapshot["enabled"],
+            "job_pending": False,
+        },
+        "after": after,
+        "risk": risk,
+        "write_effects": side_effects,
+        "approval_required": True,
+        "note": "No Exchange job was submitted. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -1090,6 +1197,7 @@ async def zammad_list_admin_resources() -> str:
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "exchange_integration": {"operations": ["read"], "risk": "Shows whether Exchange OAuth data and application registration exist."},
+        "exchange_import_actions": {"operations": ["read_status", "dry_run", "start"], "risk": "Dry run reads real Exchange mailbox contacts and creates a persistent job; start may create or update Zammad users."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
@@ -3019,6 +3127,33 @@ async def _setting_snapshot_by_name(name: str) -> Mapping[str, Any]:
     return setting
 
 
+async def _exchange_import_snapshot() -> dict[str, Any]:
+    config_setting = await _setting_snapshot_by_name("exchange_config")
+    integration_setting = await _setting_snapshot_by_name("exchange_integration")
+    exchange_index = await _get(_EXCHANGE_INTEGRATION_INDEX_PATH)
+    config_state = config_setting.get("state_current")
+    integration_state = integration_setting.get("state_current")
+    config = config_state.get("value") if isinstance(config_state, Mapping) else None
+    enabled = integration_state.get("value") if isinstance(integration_state, Mapping) else None
+    oauth = exchange_index.get("oauth") if isinstance(exchange_index, Mapping) else None
+    if not isinstance(config, Mapping):
+        raise ValueError("Exchange connection settings are not configured")
+    if not isinstance(enabled, bool):
+        raise RuntimeError("Zammad returned an invalid Exchange integration setting")
+    if oauth is None:
+        oauth = {}
+    if not isinstance(oauth, Mapping):
+        raise RuntimeError("Zammad returned invalid Exchange OAuth state")
+    return {"config": dict(config), "enabled": enabled, "oauth": dict(oauth)}
+
+
+async def _exchange_import_pending(action: str) -> bool:
+    path = _EXCHANGE_IMPORT_DRY_RUN_PATH if action == "dry_run" else _EXCHANGE_IMPORT_START_PATH
+    params = {"finished": "false"} if action == "dry_run" else None
+    job = await _get(path, params)
+    return project_exchange_import_status(job, action)["status"] in {"queued", "running"}
+
+
 async def _ldap_import_pending(action: str) -> bool:
     if action == "dry_run":
         job = await _get("/integration/ldap/job_try", {"finished": "false"})
@@ -4304,6 +4439,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__ldap_import_action__":
             current = await _ldap_sources_snapshot()
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__exchange_import_action__":
+            current = await _exchange_import_snapshot()
+            current_fingerprint = _crypto_digest(current)
         elif plan["resource"] == "__translation_change__":
             if plan["operation"] == "upsert":
                 current = await _translation_upsert_snapshot(plan["translation_locale"], plan["translation_source"])
@@ -4430,6 +4568,14 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 raise RuntimeError("An LDAP import job was queued or started after preview; prepare a new plan")
             path = "/integration/ldap/job_try" if operation == "dry_run" else "/integration/ldap/job_start"
             result = await _request("POST", path, {})
+        elif resource == "__exchange_import_action__":
+            if operation == "start" and current["enabled"] is not True:
+                raise RuntimeError("The Exchange integration was disabled after preview; prepare a new plan")
+            if await _exchange_import_pending("dry_run") or await _exchange_import_pending("start"):
+                raise RuntimeError("An Exchange import job was queued or started after preview; prepare a new plan")
+            path = _EXCHANGE_IMPORT_DRY_RUN_PATH if operation == "dry_run" else _EXCHANGE_IMPORT_START_PATH
+            submitted = await _request("POST", path, data)
+            result = {"accepted": isinstance(submitted, Mapping) and submitted.get("result") == "ok"}
         elif resource == _SPECIAL_CHANNEL:
             result = await _request("POST", _SPECIAL_PATH, data)
         elif resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -4895,6 +5041,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
     response_resource = {
         "__ldap_connection_action__": "ldap_connection_tests",
         "__ldap_import_action__": "ldap_import_actions",
+        "__exchange_import_action__": "exchange_import_actions",
         "__object_manager_migrations__": "object_manager_attributes",
         "__session_action__": "sessions",
         "__data_privacy_deletion__": "data_privacy_tasks",
@@ -4919,6 +5066,10 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "Plan consumed. A dry-run ImportJob was submitted; it does not save user or role changes. Read status before starting another dry run."
     elif resource == "__ldap_import_action__":
         response_note = "Plan consumed. A background LDAP sync was queued and may change users and roles. Read status before retrying."
+    elif resource == "__exchange_import_action__" and operation == "dry_run":
+        response_note = "Plan consumed. A persistent Exchange dry-run job was submitted and may contain contact-derived data. Read its projected status before retrying."
+    elif resource == "__exchange_import_action__":
+        response_note = "Plan consumed. An Exchange import job was queued and may create or update Zammad users. Read projected status before retrying."
     elif resource == "__data_privacy_deletion__":
         response_note = "The deletion was queued for asynchronous Zammad processing. Its scope can change before execution; inspect the Data Privacy task status before retrying."
     elif resource == "__oauth_application_token__":
