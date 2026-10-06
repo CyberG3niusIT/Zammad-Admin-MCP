@@ -351,9 +351,3 @@ See `ADMIN_COVERAGE.md` for detailed coverage information.
 ## Website
 
 The static product website is in [`website/index.html`](website/index.html). It has no build step or additional runtime dependencies.
-
----
-
-## License
-
-Open source project by CyberG3niusIT.
