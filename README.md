@@ -124,6 +124,7 @@ Supported workflows include:
 - existing Facebook channel page mappings and lifecycle changes use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
 - existing Microsoft 365 and Microsoft Graph mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; probes return only status and message counts, while OAuth account linking remains in Zammad's browser flow
 - existing Google mailbox group, sender address, folder, archive, lifecycle, and probe operations use staged, high-impact previews; OAuth account linking remains in Zammad's browser flow
+- WhatsApp channel updates can retain the configured access token and app secret when those fields are omitted; replacements must use process environment references
 - User CSV import uses Zammad's transactional `try=true` preview, a short-lived in-memory plan, a complete user-inventory stale check, and explicit high-impact approval before import; imported records and row error text are never returned
 - Google and Microsoft 365 channels with a stored migration backup can be rolled back through a staged plan that previews restored metadata without showing the saved configuration
 - Web channel settings can be listed by Zammad area (for example `CustomerWeb::Base`) and changed through the staged settings workflow

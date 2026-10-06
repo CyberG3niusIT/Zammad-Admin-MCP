@@ -467,11 +467,13 @@ def _validate_channel_payload(resource: str, operation: str, data: Any) -> None:
 
     if resource == "whatsapp_channels":
         allowed = {"business_id", "access_token", "app_secret", "phone_number_id", "group_id", "welcome", "reminder_active", "reminder_message"}
-        required = {"business_id", "access_token", "app_secret", "phone_number_id", "group_id"}
+        required = {"business_id", "phone_number_id", "group_id"}
+        if operation != "update":
+            required.update({"access_token", "app_secret"})
         payload = keys(data, allowed, required, "WhatsApp channel")
         for key in {"business_id", "phone_number_id"}:
             text(payload[key], key)
-        for key in {"access_token", "app_secret"}:
+        for key in {"access_token", "app_secret"} & set(payload):
             text(payload[key], key, secret=True)
         _validate_id(payload["group_id"])
         if "welcome" in payload and not isinstance(payload["welcome"], str):
@@ -3869,6 +3871,18 @@ async def zammad_prepare_admin_change(
         before_preview = _project_messaging_channels(before)
         if operation in {"create", "update"}:
             after = preview_data
+            if resource == "whatsapp_channels" and operation == "update":
+                after = {
+                    **preview_data,
+                    "credential_handling": {
+                        key: (
+                            "set from process environment"
+                            if preview_data.get(key) == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]"
+                            else "existing credential retained"
+                        )
+                        for key in ("access_token", "app_secret")
+                    },
+                }
         elif operation in {"enable", "disable"}:
             after = {"id": object_id, "active": operation == "enable"}
         elif operation == "test":
