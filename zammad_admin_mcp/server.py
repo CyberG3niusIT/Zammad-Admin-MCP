@@ -40,6 +40,8 @@ from zammad_admin_mcp.admin_schemas.exchange import prepare_exchange_dry_run_pay
 from zammad_admin_mcp.admin_schemas.exchange import exchange_endpoint_host
 from zammad_admin_mcp.admin_schemas.exchange import project_exchange_import_status
 from zammad_admin_mcp.admin_schemas.exchange import project_exchange_integration_status
+from zammad_admin_mcp.admin_schemas.exchange import project_exchange_connection_result
+from zammad_admin_mcp.admin_schemas.exchange import validate_exchange_connection_action
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
 from zammad_admin_mcp.admin_schemas.ldap_actions import materialize_payload as materialize_ldap_action
 from zammad_admin_mcp.admin_schemas.ldap_actions import retain_source_values as retain_ldap_action_values
@@ -255,6 +257,9 @@ _MESSAGING_CHANNELS_RESOURCE = "messaging_channels"
 _EMAIL_ACCOUNT_RESOURCE = "email_account"
 _EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
 _EXCHANGE_INTEGRATION_INDEX_PATH = "/integration/exchange/index"
+_EXCHANGE_AUTODISCOVER_PATH = "/integration/exchange/autodiscover"
+_EXCHANGE_FOLDERS_PATH = "/integration/exchange/folders"
+_EXCHANGE_MAPPING_PATH = "/integration/exchange/mapping"
 _EXCHANGE_IMPORT_DRY_RUN_PATH = "/integration/exchange/job_try"
 _EXCHANGE_IMPORT_START_PATH = "/integration/exchange/job_start"
 _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
@@ -518,7 +523,9 @@ async def _request(
 ) -> Any:
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
-        _EXCHANGE_INTEGRATION_INDEX_PATH, _EXCHANGE_IMPORT_DRY_RUN_PATH,
+        _EXCHANGE_INTEGRATION_INDEX_PATH, _EXCHANGE_AUTODISCOVER_PATH,
+        _EXCHANGE_FOLDERS_PATH, _EXCHANGE_MAPPING_PATH,
+        _EXCHANGE_IMPORT_DRY_RUN_PATH,
         _EXCHANGE_IMPORT_START_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
@@ -661,6 +668,8 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if path == _EXCHANGE_INTEGRATION_INDEX_PATH and method != "GET":
         raise ValueError("Exchange integration status supports GET only")
+    if path in {_EXCHANGE_AUTODISCOVER_PATH, _EXCHANGE_FOLDERS_PATH, _EXCHANGE_MAPPING_PATH} and method != "POST":
+        raise ValueError("Exchange connection checks support POST only")
     if path == _EXCHANGE_IMPORT_DRY_RUN_PATH and method not in {"GET", "POST"}:
         raise ValueError("Exchange dry-run jobs support GET status and POST submission only")
     if path == _EXCHANGE_IMPORT_START_PATH and method not in {"GET", "POST"}:
@@ -734,6 +743,90 @@ async def zammad_get_exchange_import_status(action: Literal["dry_run", "start"])
     params = {"finished": "true"} if action == "dry_run" else None
     job = await _get(path, params)
     return _json(project_exchange_import_status(job, action))
+
+
+@mcp.tool()
+async def zammad_prepare_exchange_connection_action(
+    action: Literal["autodiscover", "folders", "mapping"],
+    data: dict[str, Any],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Prepare a bounded Exchange connection check without contacting Exchange."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    if not acknowledge_high_impact:
+        raise ValueError("Exchange connection checks require acknowledge_high_impact=true")
+    if action not in {"autodiscover", "folders", "mapping"}:
+        raise ValueError("Unsupported Exchange connection action")
+    materialized, safe_input = _materialize_secret_values(data)
+    payload = validate_exchange_connection_action(action, materialized)
+    preview = validate_exchange_connection_action(action, safe_input)
+
+    oauth_snapshot: dict[str, Any] = {}
+    auth_type = payload.get("auth_type")
+    if auth_type == "oauth":
+        oauth_snapshot = await _exchange_oauth_snapshot()
+        access_token = oauth_snapshot.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            raise ValueError("The Exchange OAuth connection does not have an access token")
+
+    if action == "autodiscover":
+        domain = payload["user"].rsplit("@", 1)[1].lower()
+        preview_after = {
+            "action": action,
+            "mail_domain": domain,
+            "credentials_configured": bool(preview.get("password")),
+            "credentials_returned": False,
+        }
+        effects = ["Connect from Zammad to the Exchange Autodiscover service for the email domain"]
+    else:
+        preview_after = {
+            "action": action,
+            "endpoint_host": exchange_endpoint_host(payload["endpoint"]),
+            "auth_type": auth_type,
+            "credentials_configured": bool(preview.get("password")) or auth_type == "oauth",
+            "credentials_returned": False,
+            "tls_certificate_verification": "disabled" if payload["disable_ssl_verify"] else "enabled",
+        }
+        if action == "mapping":
+            preview_after["selected_folder_count"] = len(payload["folders"])
+            preview_after["contact_values_returned"] = False
+        effects = ["Connect from Zammad to the configured Exchange endpoint"]
+    if payload.get("disable_ssl_verify") is True:
+        effects.append("The request will disable TLS certificate verification")
+    if any(isinstance(value, str) and value == "[SECRET PROVIDED BY PROCESS ENVIRONMENT]" for value in safe_input.values()):
+        effects.append("Use credentials from the MCP process environment without returning them")
+
+    fingerprint = _crypto_digest(oauth_snapshot) if oauth_snapshot else None
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__exchange_connection_action__",
+        "operation": action,
+        "data": payload,
+        "fingerprint": fingerprint,
+        "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+
+    return _json({
+        "plan_id": plan_id,
+        "resource": "exchange_connection_tests",
+        "operation": action,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": fingerprint,
+        "after": preview_after,
+        "risk": "Applying this plan sends an outbound Exchange connection request; returned data is limited to configuration metadata.",
+        "write_effects": effects,
+        "approval_required": True,
+        "note": "No Exchange connection request was sent. Apply only after explicit user approval.",
+    })
 
 
 @mcp.tool()
@@ -1197,6 +1290,7 @@ async def zammad_list_admin_resources() -> str:
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
         "exchange_integration": {"operations": ["read"], "risk": "Shows whether Exchange OAuth data and application registration exist."},
+        "exchange_connection_tests": {"operations": ["autodiscover", "folders", "mapping"], "risk": "Sends an approved outbound Exchange request; mapping reads contact-derived attributes but never returns example values."},
         "exchange_import_actions": {"operations": ["read_status", "dry_run", "start"], "risk": "Dry run reads real Exchange mailbox contacts and creates a persistent job; start may create or update Zammad users."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
@@ -3147,6 +3241,16 @@ async def _exchange_import_snapshot() -> dict[str, Any]:
     return {"config": dict(config), "enabled": enabled, "oauth": dict(oauth)}
 
 
+async def _exchange_oauth_snapshot() -> dict[str, Any]:
+    response = await _get(_EXCHANGE_INTEGRATION_INDEX_PATH)
+    oauth = response.get("oauth") if isinstance(response, Mapping) else None
+    if oauth is None:
+        return {}
+    if not isinstance(oauth, Mapping):
+        raise RuntimeError("Zammad returned invalid Exchange OAuth state")
+    return dict(oauth)
+
+
 async def _exchange_import_pending(action: str) -> bool:
     path = _EXCHANGE_IMPORT_DRY_RUN_PATH if action == "dry_run" else _EXCHANGE_IMPORT_START_PATH
     params = {"finished": "false"} if action == "dry_run" else None
@@ -4442,6 +4546,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__exchange_import_action__":
             current = await _exchange_import_snapshot()
             current_fingerprint = _crypto_digest(current)
+        elif plan["resource"] == "__exchange_connection_action__":
+            current = await _exchange_oauth_snapshot() if plan["fingerprint"] is not None else None
+            current_fingerprint = _crypto_digest(current) if current is not None else None
         elif plan["resource"] == "__translation_change__":
             if plan["operation"] == "upsert":
                 current = await _translation_upsert_snapshot(plan["translation_locale"], plan["translation_source"])
@@ -4576,6 +4683,14 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             path = _EXCHANGE_IMPORT_DRY_RUN_PATH if operation == "dry_run" else _EXCHANGE_IMPORT_START_PATH
             submitted = await _request("POST", path, data)
             result = {"accepted": isinstance(submitted, Mapping) and submitted.get("result") == "ok"}
+        elif resource == "__exchange_connection_action__":
+            paths = {
+                "autodiscover": _EXCHANGE_AUTODISCOVER_PATH,
+                "folders": _EXCHANGE_FOLDERS_PATH,
+                "mapping": _EXCHANGE_MAPPING_PATH,
+            }
+            submitted = await _request("POST", paths[operation], data)
+            result = project_exchange_connection_result(operation, submitted)
         elif resource == _SPECIAL_CHANNEL:
             result = await _request("POST", _SPECIAL_PATH, data)
         elif resource == _EMAIL_ACCOUNT_RESOURCE:
@@ -5041,6 +5156,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
     response_resource = {
         "__ldap_connection_action__": "ldap_connection_tests",
         "__ldap_import_action__": "ldap_import_actions",
+        "__exchange_connection_action__": "exchange_connection_tests",
         "__exchange_import_action__": "exchange_import_actions",
         "__object_manager_migrations__": "object_manager_attributes",
         "__session_action__": "sessions",
@@ -5062,6 +5178,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
     }.get(resource, resource)
     if resource == "__ldap_connection_action__":
         response_note = "Plan consumed. No LDAP configuration was saved. If the request timed out, check its status before retrying."
+    elif resource == "__exchange_connection_action__":
+        response_note = "Plan consumed. No Exchange configuration was saved. The response omits credentials and contact examples."
     elif resource == "__ldap_import_action__" and operation == "dry_run":
         response_note = "Plan consumed. A dry-run ImportJob was submitted; it does not save user or role changes. Read status before starting another dry run."
     elif resource == "__ldap_import_action__":

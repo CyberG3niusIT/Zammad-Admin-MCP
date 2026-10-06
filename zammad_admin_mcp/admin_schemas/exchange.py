@@ -137,6 +137,117 @@ def exchange_endpoint_host(endpoint: str) -> str:
     return host
 
 
+def validate_exchange_connection_action(action: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError("data must be a JSON object")
+    if action == "autodiscover":
+        if set(value) != {"user", "password"}:
+            raise ValueError("autodiscover accepts only user and password")
+        if not isinstance(value.get("user"), str) or "@" not in value["user"] or not value["user"].rsplit("@", 1)[1] or any(char.isspace() for char in value["user"]):
+            raise ValueError("autodiscover user must be an email address")
+        if not isinstance(value.get("password"), str) or not value["password"]:
+            raise ValueError("autodiscover password is required")
+        return {"user": value["user"], "password": value["password"]}
+
+    allowed = {"endpoint", "user", "password", "auth_type", "disable_ssl_verify"}
+    if action == "mapping":
+        allowed.add("folders")
+    required = {"endpoint", "auth_type"}
+    if action == "mapping":
+        required.add("folders")
+    if set(value) - allowed or required - set(value):
+        raise ValueError(f"{action} has missing or unsupported fields")
+
+    endpoint = value.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint.strip() or len(endpoint) > 2048:
+        raise ValueError("endpoint is required")
+    try:
+        parts = urlsplit(endpoint)
+        hostname = parts.hostname
+        parts.port
+    except ValueError as exc:
+        raise ValueError("endpoint is invalid") from exc
+    if parts.scheme not in {"http", "https"} or not hostname or parts.username or parts.password:
+        raise ValueError("endpoint must be an HTTP(S) URL without embedded credentials")
+
+    auth_type = value.get("auth_type")
+    if not isinstance(auth_type, str) or auth_type not in {"basic", "oauth"}:
+        raise ValueError("auth_type must be basic or oauth")
+    user = value.get("user")
+    if user is not None and (not isinstance(user, str) or len(user) > 320):
+        raise ValueError("user is invalid")
+    if auth_type == "basic" and (not isinstance(user, str) or not user.strip()):
+        raise ValueError("basic authentication requires user")
+    password = value.get("password")
+    if auth_type == "basic" and (not isinstance(password, str) or not password):
+        raise ValueError("basic authentication requires a password environment reference")
+    if password is not None and not isinstance(password, str):
+        raise ValueError("password must use a process environment reference")
+    if auth_type == "oauth" and password is not None:
+        raise ValueError("OAuth connection checks do not accept a password")
+    verify = value.get("disable_ssl_verify", False)
+    if verify not in (True, False, 0, 1, "0", "1"):
+        raise ValueError("disable_ssl_verify must be a boolean")
+
+    payload: dict[str, Any] = {
+        "endpoint": endpoint,
+        "auth_type": auth_type,
+        "disable_ssl_verify": verify in (True, 1, "1"),
+    }
+    if user:
+        payload["user"] = user
+    if password is not None:
+        payload["password"] = password
+    if action == "mapping":
+        folders = value.get("folders")
+        if not isinstance(folders, list) or not 1 <= len(folders) <= 100 or any(
+            not isinstance(folder, str) or not folder or len(folder) > 512 for folder in folders
+        ) or len(set(folders)) != len(folders):
+            raise ValueError("folders must be a unique list of 1 to 100 folder IDs")
+        payload["folders"] = folders
+    return payload
+
+
+def project_exchange_connection_result(action: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError("Zammad returned an invalid Exchange connection response")
+    succeeded = value.get("result") == "ok"
+    projected: dict[str, Any] = {"action": action, "status": "succeeded" if succeeded else "failed"}
+    if not succeeded:
+        return projected
+    if action == "autodiscover":
+        endpoint = value.get("endpoint")
+        if isinstance(endpoint, str):
+            try:
+                host = exchange_endpoint_host(endpoint)
+            except ValueError:
+                host = ""
+            if host:
+                projected["endpoint_host"] = host
+                return projected
+        projected["status"] = "not_found"
+        return projected
+    if action == "folders":
+        folders = value.get("folders")
+        if not isinstance(folders, Mapping):
+            raise RuntimeError("Zammad returned invalid Exchange folder data")
+        projected["folders"] = [
+            {"id": folder_id, "display_path": display_path}
+            for folder_id, display_path in list(folders.items())[:500]
+            if isinstance(folder_id, str) and isinstance(display_path, str)
+        ]
+        projected["truncated"] = len(folders) > 500
+        return projected
+    attributes = value.get("attributes")
+    if not isinstance(attributes, Mapping):
+        raise RuntimeError("Zammad returned invalid Exchange attribute data")
+    projected["source_attributes"] = [
+        name for name in list(attributes.keys())[:500] if isinstance(name, str)
+    ]
+    projected["truncated"] = len(attributes) > 500
+    return projected
+
+
 def project_exchange_import_status(value: Any, action: str) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not value:
         return {"action": action, "status": "not_found"}
