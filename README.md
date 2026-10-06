@@ -135,6 +135,7 @@ Supported workflows include:
 - OAuth applications can be read and changed through staged plans; client secrets and generated bearer tokens are stored in the protected local secret directory and never returned in MCP output. `zammad_prepare_oauth_application_token` stages an application token for the current Zammad user
 - Product-logo updates use a staged upload with image type and size validation; previews and apply responses omit image data
 - Knowledge Base role access changes use a complete per-role preview, validate against Zammad's eligible roles, and are rejected if the permissions changed after preview
+- Knowledge Base server snippets are available as read-only generated Nginx and Apache configuration. Private-feed token ensure and rotation use staged high-impact approval; the token is saved in the protected local token store and never returned, and rotation invalidates existing feed URLs.
 - Translation administration can list customized entries, search suggestions, stage upserts, reset system translations, and delete custom translations
 - SSL certificate management can list metadata and stage single-PEM imports or certificate removal; previews never return certificate bodies
 - PGP keys and S/MIME certificates/private keys can be listed and changed through dedicated staged workflows. Private keys and passphrases require process environment references; public PGP keys may be provided directly. Reads, previews, and apply results expose only safe metadata and configured booleans
@@ -183,6 +184,8 @@ Knowledge base:
 - `zammad_get_knowledge_base_category_permissions`
 - `zammad_get_knowledge_base_record`
 - `zammad_get_knowledge_base_translation`
+- `zammad_get_knowledge_base_server_snippets`
+- `zammad_prepare_knowledge_base_feed_token_change` (ensure or rotate; saves the token locally without returning its value)
 - `zammad_prepare_knowledge_base_creation`
 - `zammad_prepare_knowledge_base_translation_change`
 - `zammad_prepare_knowledge_base_lifecycle_change`
@@ -327,7 +330,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The checked-in source registers 67 MCP tools and 86 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and the new Knowledge Base creation/translation tools are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
+- The checked-in source registers 69 MCP tools and 88 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange actions and the new Knowledge Base creation, translation, and feed-token tools are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed

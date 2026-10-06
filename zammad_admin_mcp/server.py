@@ -107,6 +107,7 @@ from zammad_admin_mcp.admin_schemas.knowledge_base_creation import create_payloa
 from zammad_admin_mcp.admin_schemas.knowledge_base_translations import preview_after as preview_knowledge_base_translation_after
 from zammad_admin_mcp.admin_schemas.knowledge_base_translations import project_snapshot as project_knowledge_base_translation_snapshot
 from zammad_admin_mcp.admin_schemas.knowledge_base_translations import validate_update as validate_knowledge_base_translation_update
+from zammad_admin_mcp.admin_schemas.knowledge_base_server_snippets import project as project_knowledge_base_server_snippets
 from zammad_admin_mcp.admin_schemas.http_logs import project_collection as project_http_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_collection as project_audit_logs
 from zammad_admin_mcp.admin_schemas.audit_logs import project_item as project_audit_log
@@ -580,6 +581,8 @@ async def _request(
     knowledge_base_path = bool(re.fullmatch(r"/knowledge_bases/\d+(?:/(?:answers|categories)(?:/\d+)?|/permissions|/categories/\d+/permissions)", path))
     knowledge_base_create_path = path == "/knowledge_bases/manage"
     knowledge_base_settings_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+", path))
+    knowledge_base_server_snippets_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/server_snippets", path))
+    knowledge_base_feed_token_path = bool(re.fullmatch(r"/knowledge_bases/\d+/feed_tokens", path))
     knowledge_base_lifecycle_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/(?:activate|deactivate)", path))
     knowledge_base_menu_path = bool(re.fullmatch(r"/knowledge_bases/manage/\d+/update_menu_items", path))
     knowledge_base_order_path = bool(re.fullmatch(
@@ -617,6 +620,7 @@ async def _request(
         google_action_path, google_group_path, google_verify_path, google_inbound_path,
         settings_image_path, settings_reset_path, item_path, knowledge_base_path, knowledge_base_create_path,
         knowledge_base_settings_path, knowledge_base_lifecycle_path, knowledge_base_menu_path,
+        knowledge_base_server_snippets_path, knowledge_base_feed_token_path,
         knowledge_base_order_path,
         knowledge_base_publication_path,
         knowledge_base_attachment_path,
@@ -673,6 +677,10 @@ async def _request(
         raise ValueError("Calendar timezone lookup supports GET only")
     if knowledge_base_create_path and method != "POST":
         raise ValueError("Knowledge Base creation supports POST only")
+    if knowledge_base_server_snippets_path and method != "GET":
+        raise ValueError("Knowledge Base server snippets support GET only")
+    if knowledge_base_feed_token_path and method not in {"GET", "PATCH"}:
+        raise ValueError("Knowledge Base feed tokens support only token retrieval or rotation")
     if path == _EXCHANGE_INTEGRATION_INDEX_PATH and method != "GET":
         raise ValueError("Exchange integration status supports GET only")
     if path in {_EXCHANGE_AUTODISCOVER_PATH, _EXCHANGE_FOLDERS_PATH, _EXCHANGE_MAPPING_PATH} and method != "POST":
@@ -1306,6 +1314,8 @@ async def zammad_list_admin_resources() -> str:
         "knowledge_base_attachments": {"operations": ["read", "upload", "delete"], "risk": "Reads attachment metadata or changes files attached to a Knowledge Base answer; upload and deletion require explicit confirmation."},
         "knowledge_base_manager": {"operations": ["create", "delete"], "risk": "Creates an active Knowledge Base or permanently removes one and its content."},
         "knowledge_base_translations": {"operations": ["read", "update"], "risk": "Changes the Knowledge Base title or footer for one locale."},
+        "knowledge_base_server_snippets": {"operations": ["read"], "risk": "Returns generated web server configuration snippets for one Knowledge Base."},
+        "knowledge_base_feed_tokens": {"operations": ["ensure", "rotate"], "risk": "Ensuring may create a persistent private-feed token; rotation invalidates existing feed URLs. Secrets are stored locally and never returned."},
         "knowledge_base_publication": {"operations": ["read", "transition", "schedule"], "risk": "Changes internal or public answer visibility and can update the global public Knowledge Base setting; staged preview and explicit confirmation required."},
         "knowledge_bases": {"operations": ["read"], "risk": "Returns Knowledge Base metadata and content IDs available to the authenticated Zammad user; answer bodies are omitted."},
         "http_logs": {"operations": ["read"], "risk": "Returns recent integration log metadata; URLs and request/response payloads are omitted."},
@@ -2102,6 +2112,14 @@ async def zammad_get_knowledge_base_publication_state(
 async def zammad_get_knowledge_base(knowledge_base_id: int) -> str:
     """Read one Knowledge Base configuration object by its Zammad ID."""
     return _json(await _get(f"/knowledge_bases/{_validate_id(knowledge_base_id)}"))
+
+
+@mcp.tool()
+async def zammad_get_knowledge_base_server_snippets(knowledge_base_id: int) -> str:
+    """Read generated Nginx and Apache snippets for one Knowledge Base."""
+    kb_id = _validate_id(knowledge_base_id)
+    result = await _get(f"/knowledge_bases/manage/{kb_id}/server_snippets")
+    return _json(project_knowledge_base_server_snippets(result))
 
 
 @mcp.tool()
@@ -3364,6 +3382,63 @@ async def zammad_prepare_knowledge_base_translation_change(
         "risk": "Changes the Knowledge Base title or footer displayed to users in the selected locale.",
         "approval_required": True,
         "note": "No write was performed. Apply only after explicit user approval.",
+    })
+
+
+@mcp.tool()
+async def zammad_prepare_knowledge_base_feed_token_change(
+    knowledge_base_id: int,
+    action: Literal["ensure", "rotate"],
+    acknowledge_high_impact: bool = False,
+) -> str:
+    """Stage creation/retrieval or rotation of a private Knowledge Base feed token."""
+    global _PLAN_CLEANER
+    if _PLAN_CLEANER is None or _PLAN_CLEANER.done():
+        _PLAN_CLEANER = asyncio.create_task(_clean_expired_plans())
+    kb_id = _validate_id(knowledge_base_id)
+    if action not in {"ensure", "rotate"}:
+        raise ValueError("Knowledge Base feed token action must be ensure or rotate")
+    if not acknowledge_high_impact:
+        raise ValueError("Knowledge Base feed token changes require acknowledge_high_impact=true")
+    before = await _get(f"/knowledge_bases/{kb_id}")
+    if not isinstance(before, Mapping) or before.get("id") != kb_id:
+        raise RuntimeError("Zammad did not return the requested Knowledge Base")
+    before_preview = {
+        "knowledge_base_id": kb_id,
+        "active": before.get("active") if isinstance(before.get("active"), bool) else None,
+        "private_feed_token_action": action,
+    }
+    plan_id = secrets.token_urlsafe(24)
+    now = time.time()
+    plan = {
+        "resource": "__knowledge_base_feed_token__", "operation": action,
+        "object_id": kb_id, "data": {}, "fingerprint": _digest(before),
+        "snapshot_path": f"/knowledge_bases/{kb_id}", "before": before,
+        "preview_before": before_preview, "expires_at": now + _PLAN_TTL_SECONDS,
+        "high_impact": True,
+    }
+    async with _PLAN_LOCK:
+        _expire_plans(now)
+        if len(_PLANS) >= _MAX_PLANS:
+            _PLANS.pop(min(_PLANS, key=lambda key: _PLANS[key]["expires_at"]), None)
+        _PLANS[plan_id] = plan
+    impact = (
+        "May create a persistent private-feed token if none exists; the token will only be saved in the protected local token store."
+        if action == "ensure"
+        else "Invalidates the current private-feed token and its existing feed URLs; the replacement will only be saved in the protected local token store."
+    )
+    return _json({
+        "plan_id": plan_id,
+        "resource": "knowledge_base_feed_tokens",
+        "operation": action,
+        "knowledge_base_id": kb_id,
+        "expires_in_seconds": _PLAN_TTL_SECONDS,
+        "snapshot_fingerprint": plan["fingerprint"],
+        "before": before_preview,
+        "after": {"token_value_returned": False, "stored_in_protected_local_store": True},
+        "risk": impact,
+        "approval_required": True,
+        "note": "No token request was sent. Apply only after explicit approval.",
     })
 
 
@@ -4769,6 +4844,9 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         elif plan["resource"] == "__knowledge_base_translation__":
             current = await _knowledge_base_translation_snapshot(plan["object_id"], plan["kb_locale_id"])
             current_fingerprint = _digest(current)
+        elif plan["resource"] == "__knowledge_base_feed_token__":
+            current = await _get(f"/knowledge_bases/{plan['object_id']}")
+            current_fingerprint = _digest(current)
         elif plan["resource"] in {"__knowledge_base_attachment_upload__", "__knowledge_base_attachment_delete__"}:
             current = await _knowledge_base_attachments_snapshot(plan["parent_id"], plan.get("answer_id", plan["object_id"]))
             current_fingerprint = _digest(current)
@@ -4833,6 +4911,45 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
                 "knowledge_base_id": plan["object_id"],
                 "kb_locale_id": plan["kb_locale_id"],
                 "fields_updated": plan["updated_fields"],
+            }
+        elif resource == "__knowledge_base_feed_token__":
+            kb_id = plan["object_id"]
+            method = "GET" if operation == "ensure" else "PATCH"
+            try:
+                token_response = await _request(method, f"/knowledge_bases/{kb_id}/feed_tokens")
+            except Exception:
+                raise RuntimeError(
+                    "The Knowledge Base feed token action failed. Inspect Zammad and the local token store before retrying."
+                ) from None
+            token_value = token_response.get("token") if isinstance(token_response, Mapping) else None
+            if not isinstance(token_value, str) or not token_value:
+                raise RuntimeError(
+                    "Zammad completed a Knowledge Base feed token action without returning a retrievable token; inspect token access before retrying"
+                )
+            try:
+                stored_path = _store_generated_token(
+                    token_value,
+                    {
+                        "name": f"knowledge-base-{kb_id}-feed-token",
+                        "purpose": "zammad-knowledge-base-private-feed",
+                        "knowledge_base_id": kb_id,
+                        "operation": operation,
+                    },
+                )
+            except Exception:
+                warning = (
+                    "Zammad may have created a private-feed token but secure local storage failed; inspect the token store before retrying."
+                    if operation == "ensure"
+                    else "Zammad rotated the private-feed token but secure local storage failed; existing feed URLs are invalid. Inspect the token store before retrying."
+                )
+                raise RuntimeError(warning) from None
+            result = {
+                "knowledge_base_id": kb_id,
+                "action": operation,
+                "stored": True,
+                "file_path": str(stored_path),
+                "file_mode": "0600",
+                "token_value_returned": False,
             }
         elif resource == "__user_import__":
             fresh_preview = await _run_user_import(data["csv_data"], data["separator"], dry_run=True)
@@ -5358,6 +5475,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         "__knowledge_base_deletion__": "knowledge_base_manager",
         "__knowledge_base_create__": "knowledge_base_manager",
         "__knowledge_base_translation__": "knowledge_base_translations",
+        "__knowledge_base_feed_token__": "knowledge_base_feed_tokens",
         "__knowledge_base_lifecycle__": "knowledge_base_lifecycle",
         "__knowledge_base_menu__": "knowledge_base_menu_items",
         "__knowledge_base_order__": "knowledge_base_ordering",
@@ -5388,6 +5506,10 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         response_note = "The Knowledge Base was created. Verify its title, locale, access and content in the inventory before preparing follow-up changes."
     elif resource == "__knowledge_base_translation__":
         response_note = "The selected Knowledge Base translation was updated. Read it again to confirm the saved text."
+    elif resource == "__knowledge_base_feed_token__" and operation == "rotate":
+        response_note = "The private-feed token was rotated and saved in the protected local token store; previous feed URLs are invalid. The token value is never returned."
+    elif resource == "__knowledge_base_feed_token__":
+        response_note = "The private-feed token was ensured and saved in the protected local token store. The token value is never returned."
     elif resource == "__user_two_factor_action__":
         response_note = "The two-factor method removal was applied. Inspect the user's enabled methods before retrying if the outcome is uncertain."
     elif resource == "__user_unlock__":
