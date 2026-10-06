@@ -35,6 +35,7 @@ from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_group_p
 from zammad_admin_mcp.admin_schemas.oauth_email_channels import validate_probe_payload as validate_oauth_email_probe_payload
 from zammad_admin_mcp.admin_schemas.external_credentials import materialize_payload as materialize_external_credentials
 from zammad_admin_mcp.admin_schemas.external_credentials import validate_payload as validate_external_credentials_payload
+from zammad_admin_mcp.admin_schemas.exchange import project_exchange_integration_status
 from zammad_admin_mcp.admin_schemas.jobs import validate_payload as validate_job_payload
 from zammad_admin_mcp.admin_schemas.ldap_actions import materialize_payload as materialize_ldap_action
 from zammad_admin_mcp.admin_schemas.ldap_actions import retain_source_values as retain_ldap_action_values
@@ -249,6 +250,7 @@ _SPECIAL_READ_PATH = "/channels_email"
 _MESSAGING_CHANNELS_RESOURCE = "messaging_channels"
 _EMAIL_ACCOUNT_RESOURCE = "email_account"
 _EMAIL_ACCOUNT_VERIFY_PATH = "/channels_email_verify"
+_EXCHANGE_INTEGRATION_INDEX_PATH = "/integration/exchange/index"
 _EMAIL_CHANNEL_ENABLE_PATH = "/channels_email_enable"
 _EMAIL_CHANNEL_DISABLE_PATH = "/channels_email_disable"
 _EMAIL_CHANNEL_GROUP_PATH = "/channels_email_group"
@@ -507,6 +509,7 @@ async def _request(
 ) -> Any:
     allowed = {
         "/version", _SPECIAL_READ_PATH, _SPECIAL_PATH, _EMAIL_ACCOUNT_VERIFY_PATH,
+        _EXCHANGE_INTEGRATION_INDEX_PATH,
         _EMAIL_CHANNEL_ENABLE_PATH, _EMAIL_CHANNEL_DISABLE_PATH, "/roles?expand=true",
         "/channels_sms_enable", "/channels_sms_disable", "/channels_sms/test",
         "/channels_telegram_enable", "/channels_telegram_disable",
@@ -646,6 +649,8 @@ async def _request(
         raise ValueError("Organization CSV imports support POST only")
     if path == "/calendars/timezones" and method != "GET":
         raise ValueError("Calendar timezone lookup supports GET only")
+    if path == _EXCHANGE_INTEGRATION_INDEX_PATH and method != "GET":
+        raise ValueError("Exchange integration status supports GET only")
     if path == "/knowledge_bases/init" and method != "POST":
         raise ValueError("Knowledge Base inventory uses its read-only initialization route")
     if path == "/knowledge_bases/manage/init" and method != "GET":
@@ -699,6 +704,13 @@ async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
 async def zammad_server_version() -> str:
     """Read the version of the connected Zammad instance."""
     return _json(await _get("/version"))
+
+
+@mcp.tool()
+async def zammad_get_exchange_integration_status() -> str:
+    """Show whether an Exchange OAuth record and an application registration are present."""
+    result = await _get(_EXCHANGE_INTEGRATION_INDEX_PATH)
+    return _json(project_exchange_integration_status(result))
 
 
 @mcp.tool()
@@ -1073,6 +1085,7 @@ async def zammad_list_admin_resources() -> str:
         _EMAIL_ACCOUNT_RESOURCE: {"operations": ["configure"], "risk": "Verifies inbound/outbound mail, sends a test message, saves the mailbox, and starts mail fetching."},
         "email_channels": {"operations": ["read", "enable", "disable", "delete", "reassign"], "risk": "Lists email metadata; writes change inbound mailbox state and can alter ticket creation."},
         _MESSAGING_CHANNELS_RESOURCE: {"operations": ["read"], "risk": "Read-only sanitized inventory of non-email messaging channels from the shared channel endpoint."},
+        "exchange_integration": {"operations": ["read"], "risk": "Shows whether Exchange OAuth data and application registration exist."},
         "knowledge_base_settings": {"operations": ["update"], "risk": "Preview/apply by knowledge_base_id; explicit confirmation required."},
         "knowledge_base_lifecycle": {"operations": ["activate", "deactivate"], "risk": "Changes public Knowledge Base availability; preview/apply and explicit confirmation required."},
         "knowledge_base_menu_items": {"operations": ["read", "update"], "risk": "Changes public navigation items for every Knowledge Base locale; complete preview and explicit confirmation required."},
