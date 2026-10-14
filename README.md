@@ -334,7 +334,7 @@ Zammad Admin MCP does not claim complete Zammad UI coverage.
 Currently outside the generic workflow:
 
 - verified system settings, mailbox, or Knowledge Base writes: read and staged preview paths exist, but no apply was performed
-- The checked-in source registers 73 MCP tools and 91 resource kinds. This Codex session still exposes 65 tools and 81 resource kinds from an older registry; Exchange, Knowledge Base, external credential verification, reporting, and AI analytics workflows are not available in the loaded session until the host reloads. The registry does not imply complete Zammad UI coverage.
+- The checked-in source and current Codex session expose 79 MCP tools and 91 resource kinds. The refreshed registry includes Exchange, Knowledge Base, external credential verification, reporting, and AI analytics workflows. The registry does not imply complete Zammad UI coverage.
 - Package changes are staged, but apply has not been performed against Zammad. Package install writes executable application code; removal reverses package migrations and deletes files. Required follow-up commands are shown in the preview and are never executed by the MCP.
 - API token creation: the one-time value is written to an owner-only local file (mode `0600`) in a private directory (mode `0700`); the MCP returns metadata and the path, never the token. This file is not encrypted. Metadata read and staged revocation are available.
 - validated LDAP/SSO settings apply behavior: the settings read/preview path covers these entries, but an apply was not performed
