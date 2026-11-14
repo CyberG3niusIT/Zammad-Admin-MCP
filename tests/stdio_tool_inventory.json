@@ -1,0 +1,3704 @@
+{
+  "transport": "actual stdio subprocess",
+  "server": {
+    "name": "zammad-admin",
+    "title": null,
+    "version": "1.30.0",
+    "websiteUrl": null,
+    "icons": null
+  },
+  "count": 79,
+  "tools": [
+    {
+      "name": "zammad_server_version",
+      "title": null,
+      "description": "Read the version of the connected Zammad instance.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_server_versionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_server_versionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_exchange_integration_status",
+      "title": null,
+      "description": "Show whether an Exchange OAuth record and an application registration are present.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_get_exchange_integration_statusArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_exchange_integration_statusOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_exchange_import_status",
+      "title": null,
+      "description": "Read Exchange import job status and aggregate counts without returning job payloads or contact data.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "dry_run",
+              "start"
+            ],
+            "title": "Action",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "zammad_get_exchange_import_statusArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_exchange_import_statusOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_exchange_connection_action",
+      "title": null,
+      "description": "Prepare a bounded Exchange connection check without contacting Exchange.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "autodiscover",
+              "folders",
+              "mapping"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "data"
+        ],
+        "title": "zammad_prepare_exchange_connection_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_exchange_connection_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_exchange_import_action",
+      "title": null,
+      "description": "Prepare an Exchange dry run or import job; neither starts until the plan is applied.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "dry_run",
+              "start"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "zammad_prepare_exchange_import_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_exchange_import_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_calendar_timezones",
+      "title": null,
+      "description": "List timezone choices used by Zammad calendar configuration.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_calendar_timezonesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_calendar_timezonesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_report_configuration",
+      "title": null,
+      "description": "Read report metrics, backends, and profiles available to the current Zammad user.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_get_report_configurationArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_report_configurationOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_generate_report_aggregates",
+      "title": null,
+      "description": "Read bounded report time-series aggregates without returning ticket records.",
+      "inputSchema": {
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "backends": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Backends",
+            "type": "array"
+          },
+          "time_range": {
+            "enum": [
+              "realtime",
+              "day",
+              "week",
+              "month",
+              "year"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Year"
+          },
+          "month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Month"
+          },
+          "day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Day"
+          },
+          "week": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Week"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "profile_id",
+          "metric",
+          "backends",
+          "time_range"
+        ],
+        "title": "zammad_generate_report_aggregatesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_generate_report_aggregatesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_report_ticket_preview",
+      "title": null,
+      "description": "Read a role-scoped report ticket preview, capped to recent periods and 100 projected records.",
+      "inputSchema": {
+        "properties": {
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "integer"
+          },
+          "metric": {
+            "title": "Metric",
+            "type": "string"
+          },
+          "backend": {
+            "title": "Backend",
+            "type": "string"
+          },
+          "time_range": {
+            "enum": [
+              "realtime",
+              "day",
+              "week"
+            ],
+            "title": "Time Range",
+            "type": "string"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Year"
+          },
+          "month": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Month"
+          },
+          "day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Day"
+          },
+          "week": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Week"
+          }
+        },
+        "required": [
+          "profile_id",
+          "metric",
+          "backend",
+          "time_range"
+        ],
+        "title": "zammad_get_report_ticket_previewArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_report_ticket_previewOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_ai_analytics_summary",
+      "title": null,
+      "description": "Summarize AI provider errors or feedback counts for at most seven days without returning AI content.",
+      "inputSchema": {
+        "properties": {
+          "report_type": {
+            "enum": [
+              "errors",
+              "with_usages"
+            ],
+            "title": "Report Type",
+            "type": "string"
+          },
+          "created_after": {
+            "title": "Created After",
+            "type": "string"
+          },
+          "created_before": {
+            "title": "Created Before",
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_type",
+          "created_after",
+          "created_before"
+        ],
+        "title": "zammad_get_ai_analytics_summaryArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_ai_analytics_summaryOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_time_accounting_report",
+      "title": null,
+      "description": "Read a bounded, privacy-projected Time Accounting Admin report for one month.",
+      "inputSchema": {
+        "properties": {
+          "report": {
+            "enum": [
+              "by_activity",
+              "by_ticket",
+              "by_customer",
+              "by_organization"
+            ],
+            "title": "Report",
+            "type": "string"
+          },
+          "year": {
+            "title": "Year",
+            "type": "integer"
+          },
+          "month": {
+            "title": "Month",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 21,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "report",
+          "year",
+          "month"
+        ],
+        "title": "zammad_get_time_accounting_reportArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_time_accounting_reportOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_user_two_factor_methods",
+      "title": null,
+      "description": "Read enabled two-factor method names for one user without credential details.",
+      "inputSchema": {
+        "properties": {
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "zammad_get_user_two_factor_methodsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_user_two_factor_methodsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_user_history",
+      "title": null,
+      "description": "Read recent account history with secret-like field values redacted and related assets omitted.",
+      "inputSchema": {
+        "properties": {
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "zammad_get_user_historyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_user_historyOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_organization_history",
+      "title": null,
+      "description": "Read recent organization history with secret-like field values redacted.",
+      "inputSchema": {
+        "properties": {
+          "organization_id": {
+            "title": "Organization Id",
+            "type": "integer"
+          },
+          "limit": {
+            "default": 100,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "organization_id"
+        ],
+        "title": "zammad_get_organization_historyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_organization_historyOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_user_two_factor_change",
+      "title": null,
+      "description": "Preview removal of one or all of a user's configured two-factor methods.",
+      "inputSchema": {
+        "properties": {
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          },
+          "operation": {
+            "enum": [
+              "remove_method",
+              "remove_all"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "user_id",
+          "operation"
+        ],
+        "title": "zammad_prepare_user_two_factor_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_user_two_factor_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_user_unlock",
+      "title": null,
+      "description": "Preview unlocking a user whose failed-login count exceeds Zammad's configured threshold.",
+      "inputSchema": {
+        "properties": {
+          "user_id": {
+            "title": "User Id",
+            "type": "integer"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "zammad_prepare_user_unlockArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_user_unlockOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_proxy_test",
+      "title": null,
+      "description": "Preview an outbound proxy connectivity check; it does not save proxy settings.",
+      "inputSchema": {
+        "properties": {
+          "proxy": {
+            "title": "Proxy",
+            "type": "string"
+          },
+          "proxy_username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proxy Username"
+          },
+          "proxy_password": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proxy Password"
+          },
+          "proxy_no": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Proxy No"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proxy"
+        ],
+        "title": "zammad_prepare_proxy_testArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_proxy_testOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_ticket_agent_notification_apply",
+      "title": null,
+      "description": "Preview the asynchronous action that applies default notifications to all agents.",
+      "inputSchema": {
+        "properties": {
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "title": "zammad_prepare_ticket_agent_notification_applyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_ticket_agent_notification_applyOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_pgp_status",
+      "title": null,
+      "description": "Check whether Zammad reports its PGP integration as available.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_get_pgp_statusArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_pgp_statusOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_pgp_key",
+      "title": null,
+      "description": "Read safe metadata for one PGP key without returning key material or passphrases.",
+      "inputSchema": {
+        "properties": {
+          "object_id": {
+            "title": "Object Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "object_id"
+        ],
+        "title": "zammad_get_pgp_keyArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_pgp_keyOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_admin_resources",
+      "title": null,
+      "description": "List API-backed administration resource names supported by this server.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_admin_resourcesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_admin_resourcesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_search_audit_logs",
+      "title": null,
+      "description": "Search the read-only Zammad security audit history.",
+      "inputSchema": {
+        "properties": {
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "page": {
+            "default": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "default": 100,
+            "title": "Per Page",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "zammad_search_audit_logsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_search_audit_logsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_user_import",
+      "title": null,
+      "description": "Preview a Zammad user CSV import without returning imported user data.",
+      "inputSchema": {
+        "properties": {
+          "csv_data": {
+            "title": "Csv Data",
+            "type": "string"
+          },
+          "separator": {
+            "default": ",",
+            "title": "Separator",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "csv_data"
+        ],
+        "title": "zammad_prepare_user_importArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_user_importOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_organization_import",
+      "title": null,
+      "description": "Preview a Zammad organization CSV import without returning imported organization data.",
+      "inputSchema": {
+        "properties": {
+          "csv_data": {
+            "title": "Csv Data",
+            "type": "string"
+          },
+          "separator": {
+            "default": ",",
+            "title": "Separator",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "csv_data"
+        ],
+        "title": "zammad_prepare_organization_importArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_organization_importOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_http_logs",
+      "title": null,
+      "description": "List recent permitted integration HTTP logs without URLs or request/response payloads.",
+      "inputSchema": {
+        "properties": {
+          "facility": {
+            "anyOf": [
+              {
+                "enum": [
+                  "AI::Provider",
+                  "check_mk",
+                  "clearbit",
+                  "cti",
+                  "EWS",
+                  "GitHub",
+                  "GitLab",
+                  "idoit",
+                  "ldap",
+                  "MicrosoftGraph",
+                  "PGP",
+                  "placetel",
+                  "S/MIME",
+                  "SAML",
+                  "sipagte.io",
+                  "sipgate.io",
+                  "webhook",
+                  "WhatsApp::Business"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Facility"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "zammad_list_http_logsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_http_logsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_admin_resource",
+      "title": null,
+      "description": "List an administration resource, optionally filtering settings by Zammad area.",
+      "inputSchema": {
+        "properties": {
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "page": {
+            "default": 1,
+            "title": "Page",
+            "type": "integer"
+          },
+          "per_page": {
+            "default": 100,
+            "title": "Per Page",
+            "type": "integer"
+          },
+          "area": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Area"
+          }
+        },
+        "required": [
+          "resource"
+        ],
+        "title": "zammad_list_admin_resourceArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_admin_resourceOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_groups",
+      "title": null,
+      "description": "List configured Zammad groups. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_groupsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_groupsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_roles",
+      "title": null,
+      "description": "List configured Zammad roles. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_rolesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_rolesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_calendars",
+      "title": null,
+      "description": "List configured Zammad calendars. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_calendarsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_calendarsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_slas",
+      "title": null,
+      "description": "List configured Zammad slas. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_slasArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_slasOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_triggers",
+      "title": null,
+      "description": "List configured Zammad triggers. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_triggersArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_triggersOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_ticket_states",
+      "title": null,
+      "description": "List configured Zammad ticket states. Read-only.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_ticket_statesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_ticket_statesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_roles_expanded",
+      "title": null,
+      "description": "List roles with related permissions expanded where supported.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_roles_expandedArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_roles_expandedOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_admin_object",
+      "title": null,
+      "description": "Read one object from a Zammad administration resource.",
+      "inputSchema": {
+        "properties": {
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "resource",
+          "object_id"
+        ],
+        "title": "zammad_get_admin_objectArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_admin_objectOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_ldap_import_action",
+      "title": null,
+      "description": "Prepare an LDAP dry-run import or full synchronization without starting it.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "dry_run",
+              "sync"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "zammad_prepare_ldap_import_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_ldap_import_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_ldap_import_status",
+      "title": null,
+      "description": "Read LDAP import progress and aggregate counts without exposing payloads or directory records.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "dry_run",
+              "sync"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "include_completed": {
+            "default": true,
+            "title": "Include Completed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "zammad_get_ldap_import_statusArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_ldap_import_statusOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_ldap_connection_action",
+      "title": null,
+      "description": "Prepare an LDAP discovery or bind check without contacting the directory.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "enum": [
+              "discover",
+              "bind"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "data"
+        ],
+        "title": "zammad_prepare_ldap_connection_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_ldap_connection_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_knowledge_bases",
+      "title": null,
+      "description": "Discover Knowledge Bases and translated category/answer titles without returning answer bodies.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_knowledge_basesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_knowledge_basesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_menu_items",
+      "title": null,
+      "description": "Read all public menu items for one Knowledge Base location and every locale.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "location": {
+            "enum": [
+              "header",
+              "footer"
+            ],
+            "title": "Location",
+            "type": "string"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "location"
+        ],
+        "title": "zammad_get_knowledge_base_menu_itemsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_menu_itemsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_order",
+      "title": null,
+      "description": "Read ordered sibling IDs for a Knowledge Base category or answer collection.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "root_categories",
+              "categories",
+              "answers"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "category_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category Id"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kind"
+        ],
+        "title": "zammad_get_knowledge_base_orderArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_orderOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_attachments",
+      "title": null,
+      "description": "Read file names, sizes, and content types attached to one Knowledge Base answer.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id"
+        ],
+        "title": "zammad_get_knowledge_base_attachmentsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_attachmentsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_publication_state",
+      "title": null,
+      "description": "Read a Knowledge Base answer's scheduled publication timestamps and current state.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id"
+        ],
+        "title": "zammad_get_knowledge_base_publication_stateArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_publication_stateOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base",
+      "title": null,
+      "description": "Read one Knowledge Base configuration object by its Zammad ID.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id"
+        ],
+        "title": "zammad_get_knowledge_baseArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_baseOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_server_snippets",
+      "title": null,
+      "description": "Read generated Nginx and Apache snippets for one Knowledge Base.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id"
+        ],
+        "title": "zammad_get_knowledge_base_server_snippetsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_server_snippetsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_translation",
+      "title": null,
+      "description": "Read one Knowledge Base title and footer for its configured locale.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kb_locale_id": {
+            "title": "Kb Locale Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kb_locale_id"
+        ],
+        "title": "zammad_get_knowledge_base_translationArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_translationOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_knowledge_base_categories",
+      "title": null,
+      "description": "List category IDs and parent/child relationships for one Knowledge Base.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id"
+        ],
+        "title": "zammad_list_knowledge_base_categoriesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_knowledge_base_categoriesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_permissions",
+      "title": null,
+      "description": "Read the role permissions configured for one Knowledge Base.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id"
+        ],
+        "title": "zammad_get_knowledge_base_permissionsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_permissionsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_category_permissions",
+      "title": null,
+      "description": "Read configured and inherited role access for one Knowledge Base category.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "category_id": {
+            "title": "Category Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "category_id"
+        ],
+        "title": "zammad_get_knowledge_base_category_permissionsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_category_permissionsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_list_customized_translations",
+      "title": null,
+      "description": "List custom or changed translation entries from Zammad.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_list_customized_translationsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_list_customized_translationsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_search_translation_suggestions",
+      "title": null,
+      "description": "Search system and custom translation suggestions for one locale.",
+      "inputSchema": {
+        "properties": {
+          "locale": {
+            "title": "Locale",
+            "type": "string"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "locale",
+          "query"
+        ],
+        "title": "zammad_search_translation_suggestionsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_search_translation_suggestionsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_monitoring_health",
+      "title": null,
+      "description": "Read a redacted monitoring summary without returning the monitoring token or issue details.",
+      "inputSchema": {
+        "properties": {},
+        "title": "zammad_get_monitoring_healthArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_monitoring_healthOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_monitoring_action",
+      "title": null,
+      "description": "Preview a monitoring token rotation or failed-job restart.",
+      "inputSchema": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "rotate_token",
+              "restart_failed_jobs"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "zammad_prepare_monitoring_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_monitoring_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_object_manager_migrations",
+      "title": null,
+      "description": "Preview all queued object manager migrations, including permanent data loss from field removal.",
+      "inputSchema": {
+        "properties": {
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "title": "zammad_prepare_object_manager_migrationsArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_object_manager_migrationsOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_object_manager_discard_changes",
+      "title": null,
+      "description": "Preview discarding all queued object manager changes without reversing completed migrations.",
+      "inputSchema": {
+        "properties": {
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "title": "zammad_prepare_object_manager_discard_changesArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_object_manager_discard_changesOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_session_action",
+      "title": null,
+      "description": "Preview ending one active Zammad user session; the user will need to sign in again.",
+      "inputSchema": {
+        "properties": {
+          "operation": {
+            "const": "delete",
+            "title": "Operation",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "integer"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation",
+          "session_id"
+        ],
+        "title": "zammad_prepare_session_actionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_session_actionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_data_privacy_deletion",
+      "title": null,
+      "description": "Preview one asynchronous Zammad user or ticket deletion task; no task is queued until apply.",
+      "inputSchema": {
+        "properties": {
+          "object_type": {
+            "enum": [
+              "User",
+              "Ticket"
+            ],
+            "title": "Object Type",
+            "type": "string"
+          },
+          "object_id": {
+            "title": "Object Id",
+            "type": "integer"
+          },
+          "confirmation": {
+            "const": "DELETE",
+            "title": "Confirmation",
+            "type": "string"
+          },
+          "delete_organization": {
+            "default": false,
+            "title": "Delete Organization",
+            "type": "boolean"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "object_type",
+          "object_id",
+          "confirmation"
+        ],
+        "title": "zammad_prepare_data_privacy_deletionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_data_privacy_deletionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_oauth_application_token",
+      "title": null,
+      "description": "Preview issuing a bearer token for the current Zammad user to one OAuth application.",
+      "inputSchema": {
+        "properties": {
+          "application_id": {
+            "title": "Application Id",
+            "type": "integer"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "application_id"
+        ],
+        "title": "zammad_prepare_oauth_application_tokenArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_oauth_application_tokenOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_package_change",
+      "title": null,
+      "description": "Preview a Zammad package install or removal; install can write executable application code.",
+      "inputSchema": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "install",
+              "uninstall"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "package_data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Package Data"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Package Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "zammad_prepare_package_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_package_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_ssl_certificate_change",
+      "title": null,
+      "description": "Preview an SSL certificate import or removal without writing to Zammad.",
+      "inputSchema": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "create",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "certificate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Certificate"
+          },
+          "certificate_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Certificate Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "zammad_prepare_ssl_certificate_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_ssl_certificate_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_crypto_material_change",
+      "title": null,
+      "description": "Preview PGP or S/MIME material changes; secret inputs must use process environment references.",
+      "inputSchema": {
+        "properties": {
+          "resource": {
+            "enum": [
+              "pgp_keys",
+              "smime_certificates",
+              "smime_private_keys"
+            ],
+            "title": "Resource",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Object Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "resource",
+          "operation"
+        ],
+        "title": "zammad_prepare_crypto_material_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_crypto_material_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_translation_change",
+      "title": null,
+      "description": "Preview a translation change; apply requires a separate explicit approval.",
+      "inputSchema": {
+        "properties": {
+          "operation": {
+            "enum": [
+              "upsert",
+              "reset",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "translation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Translation Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "title": "zammad_prepare_translation_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_translation_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_permissions_change",
+      "title": null,
+      "description": "Preview a full Knowledge Base role-access change; this tool never writes.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "permissions"
+        ],
+        "title": "zammad_prepare_knowledge_base_permissions_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_permissions_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_category_permissions_change",
+      "title": null,
+      "description": "Preview a full role-access change for one category; this tool never writes.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "category_id": {
+            "title": "Category Id",
+            "type": "integer"
+          },
+          "permissions": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "category_id",
+          "permissions"
+        ],
+        "title": "zammad_prepare_knowledge_base_category_permissions_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_category_permissions_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_get_knowledge_base_record",
+      "title": null,
+      "description": "Read one Knowledge Base answer or full category; answer content is optional by translation ID.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "answers",
+              "categories"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "record_id": {
+            "title": "Record Id",
+            "type": "integer"
+          },
+          "translation_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Translation Id"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kind",
+          "record_id"
+        ],
+        "title": "zammad_get_knowledge_base_recordArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_get_knowledge_base_recordOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_translation_change",
+      "title": null,
+      "description": "Prepare a Knowledge Base title or footer update for one locale.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kb_locale_id": {
+            "title": "Kb Locale Id",
+            "type": "integer"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kb_locale_id",
+          "data"
+        ],
+        "title": "zammad_prepare_knowledge_base_translation_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_translation_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_feed_token_change",
+      "title": null,
+      "description": "Stage creation/retrieval or rotation of a private Knowledge Base feed token.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "action": {
+            "enum": [
+              "ensure",
+              "rotate"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "action"
+        ],
+        "title": "zammad_prepare_knowledge_base_feed_token_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_feed_token_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_settings_change",
+      "title": null,
+      "description": "Prepare a Knowledge Base settings update without writing it.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "data": {
+            "additionalProperties": true,
+            "title": "Data",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "data"
+        ],
+        "title": "zammad_prepare_knowledge_base_settings_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_settings_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_lifecycle_change",
+      "title": null,
+      "description": "Prepare an explicitly approved Knowledge Base activation change.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "action": {
+            "enum": [
+              "activate",
+              "deactivate"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "action"
+        ],
+        "title": "zammad_prepare_knowledge_base_lifecycle_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_lifecycle_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_creation",
+      "title": null,
+      "description": "Prepare creation of an active Knowledge Base in one primary locale.",
+      "inputSchema": {
+        "properties": {
+          "system_locale_id": {
+            "title": "System Locale Id",
+            "type": "integer"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "system_locale_id"
+        ],
+        "title": "zammad_prepare_knowledge_base_creationArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_creationOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_deletion",
+      "title": null,
+      "description": "Prepare permanent deletion of a Knowledge Base, its content, and attached files.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "confirmation_phrase": {
+            "title": "Confirmation Phrase",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "confirmation_phrase"
+        ],
+        "title": "zammad_prepare_knowledge_base_deletionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_deletionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_menu_change",
+      "title": null,
+      "description": "Prepare a complete public Knowledge Base menu update for every locale.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "location": {
+            "enum": [
+              "header",
+              "footer"
+            ],
+            "title": "Location",
+            "type": "string"
+          },
+          "menu_items_sets": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Menu Items Sets",
+            "type": "array"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "location",
+          "menu_items_sets"
+        ],
+        "title": "zammad_prepare_knowledge_base_menu_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_menu_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_order_change",
+      "title": null,
+      "description": "Prepare a complete Knowledge Base sibling reorder without writing.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "root_categories",
+              "categories",
+              "answers"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "ordered_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ordered Ids",
+            "type": "array"
+          },
+          "category_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kind",
+          "ordered_ids"
+        ],
+        "title": "zammad_prepare_knowledge_base_order_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_order_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_attachment_upload",
+      "title": null,
+      "description": "Prepare an attachment upload of at most 10 MiB to a Knowledge Base answer.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "content_base64": {
+            "title": "Content Base64",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id",
+          "filename",
+          "content_type",
+          "content_base64"
+        ],
+        "title": "zammad_prepare_knowledge_base_attachment_uploadArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_attachment_uploadOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_attachment_delete",
+      "title": null,
+      "description": "Prepare deletion of one file from a Knowledge Base answer.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          },
+          "attachment_id": {
+            "title": "Attachment Id",
+            "type": "integer"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id",
+          "attachment_id"
+        ],
+        "title": "zammad_prepare_knowledge_base_attachment_deleteArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_attachment_deleteOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_publication_transition",
+      "title": null,
+      "description": "Prepare one Zammad-supported Knowledge Base answer visibility transition.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          },
+          "action": {
+            "enum": [
+              "internal",
+              "publish",
+              "archive",
+              "unarchive"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id",
+          "action"
+        ],
+        "title": "zammad_prepare_knowledge_base_publication_transitionArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_publication_transitionOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_publication_schedule",
+      "title": null,
+      "description": "Prepare timestamp or timer changes for internal, public, and archived visibility.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "integer"
+          },
+          "updates": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Updates",
+            "type": "object"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "answer_id",
+          "updates"
+        ],
+        "title": "zammad_prepare_knowledge_base_publication_scheduleArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_publication_scheduleOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_knowledge_base_record_change",
+      "title": null,
+      "description": "Prepare a Knowledge Base answer/category change; no write happens until apply.",
+      "inputSchema": {
+        "properties": {
+          "knowledge_base_id": {
+            "title": "Knowledge Base Id",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "answers",
+              "categories"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "update",
+              "delete"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "record_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Record Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "knowledge_base_id",
+          "kind",
+          "operation"
+        ],
+        "title": "zammad_prepare_knowledge_base_record_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_knowledge_base_record_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_prepare_admin_change",
+      "title": null,
+      "description": "Preview a Zammad admin change. This tool never writes to Zammad.\n\nAfter showing the preview, obtain explicit user approval in conversation before calling\nzammad_apply_admin_change. The MCP host must not treat the plan identifier as approval.\nSecret values must be supplied by a process environment reference, for example\n{\"$secret_env\": \"ZAMMAD_SECRET_IMAP_PASSWORD\"}; inline secret literals are rejected.\nemail_account configure plans send a test message and start mailbox polling when applied.\n",
+      "inputSchema": {
+        "properties": {
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "update",
+              "delete",
+              "configure",
+              "enable",
+              "disable",
+              "reassign",
+              "test",
+              "preload",
+              "rollback_migration",
+              "reset",
+              "verify"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Data"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Object Id"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "resource",
+          "operation"
+        ],
+        "title": "zammad_prepare_admin_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_prepare_admin_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    },
+    {
+      "name": "zammad_apply_admin_change",
+      "title": null,
+      "description": "Apply a prepared change after explicit user approval; stale plans are rejected.",
+      "inputSchema": {
+        "properties": {
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "acknowledge_high_impact": {
+            "default": false,
+            "title": "Acknowledge High Impact",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "title": "zammad_apply_admin_changeArguments",
+        "type": "object"
+      },
+      "outputSchema": {
+        "properties": {
+          "result": {
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "title": "zammad_apply_admin_changeOutput",
+        "type": "object"
+      },
+      "icons": null,
+      "annotations": null,
+      "meta": null,
+      "execution": null
+    }
+  ]
+}

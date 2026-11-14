@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -11,9 +12,9 @@ import httpx
 
 def _api_root() -> str:
     raw_url = os.environ.get("ZAMMAD_URL", "").strip()
-    token = os.environ.get("ZAMMAD_HTTP_TOKEN", "").strip()
-    if not raw_url or not token:
-        raise ValueError("ZAMMAD_URL and ZAMMAD_HTTP_TOKEN must be configured")
+    if not raw_url:
+        raise ValueError("ZAMMAD_URL must be configured")
+    _headers()
     parsed = urlsplit(raw_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("ZAMMAD_URL must be an absolute HTTP or HTTPS URL")
@@ -29,9 +30,16 @@ def _api_root() -> str:
 
 def _headers() -> dict[str, str]:
     token = os.environ.get("ZAMMAD_HTTP_TOKEN", "").strip()
-    if not token:
-        raise ValueError("ZAMMAD_HTTP_TOKEN must be configured")
-    return {"Authorization": f"Token token={token}", "Accept": "application/json"}
+    if token:
+        return {"Authorization": f"Token token={token}", "Accept": "application/json"}
+    username = os.environ.get("ZAMMAD_HTTP_USERNAME", "").strip()
+    password = os.environ.get("ZAMMAD_HTTP_PASSWORD", "")
+    if not username or not password:
+        raise ValueError("Configure ZAMMAD_HTTP_TOKEN or both ZAMMAD_HTTP_USERNAME and ZAMMAD_HTTP_PASSWORD")
+    if ":" in username:
+        raise ValueError("ZAMMAD_HTTP_USERNAME must not contain a colon")
+    encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {encoded}", "Accept": "application/json"}
 
 
 async def request(

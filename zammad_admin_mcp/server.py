@@ -4975,6 +4975,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
         raise ValueError("This change is high impact; acknowledge_high_impact=true is required")
 
     async with _WRITE_LOCK:
+        if plan["expires_at"] <= time.time():
+            raise ValueError("Unknown, expired, or already used plan_id")
         snapshot_path = plan.get("snapshot_path")
         if plan["resource"] == "__ldap_connection_action__":
             current = await _get(f"/ldap_sources/{plan['object_id']}") if plan["object_id"] is not None else None
@@ -5093,6 +5095,8 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
             dependency_current = await _get(dependency["path"])
             if _digest(dependency_current) != dependency["fingerprint"]:
                 raise RuntimeError("A related resource changed after preview; prepare a new plan")
+        if plan["expires_at"] <= time.time():
+            raise ValueError("Unknown, expired, or already used plan_id")
         resource = plan["resource"]
         operation = plan["operation"]
         data = plan["data"]
