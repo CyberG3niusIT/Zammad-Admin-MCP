@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import os
+import sys
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -47,7 +49,13 @@ def create_app():
 
 def main() -> None:
     app = create_app()
-    uvicorn.run(app, host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
+    config = uvicorn.Config(app, host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8000")))
+    server = uvicorn.Server(config)
+    if sys.platform == "win32":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(server.serve())
+    else:
+        uvicorn.run(app, host=config.host, port=config.port)
 
 
 if __name__ == "__main__":

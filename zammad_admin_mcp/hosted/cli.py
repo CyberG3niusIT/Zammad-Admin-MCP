@@ -239,7 +239,11 @@ def main() -> None:
         except ValueError as exc:
             parser.error(str(exc))
     try:
-        asyncio.run(_run(args))
+        if sys.platform == "win32":
+            with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+                runner.run(_run(args))
+        else:
+            asyncio.run(_run(args))
     except Exception as exc:
         print(f"Operation failed: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
