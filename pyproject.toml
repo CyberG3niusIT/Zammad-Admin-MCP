@@ -11,10 +11,14 @@ dependencies = [
   "httpx>=0.27,<1",
   "mcp[cli]>=1.2,<2",
   "python-dotenv>=1.0,<2",
+  "psycopg[binary,pool]>=3.2,<4",
+  "PyJWT[crypto]>=2.10,<3",
 ]
 
 [project.scripts]
 zammad-admin-mcp = "zammad_admin_mcp.server:main"
+zammad-admin-mcp-http = "zammad_admin_mcp.hosted.app:main"
+zammad-mcp-admin = "zammad_admin_mcp.hosted.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["zammad_admin_mcp*"]

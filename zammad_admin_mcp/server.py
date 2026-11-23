@@ -125,8 +125,6 @@ from zammad_admin_mcp.admin_schemas.user_imports import validate_csv_input as va
 from zammad_admin_mcp.admin_schemas.user_history import project_history as project_user_history
 from zammad_admin_mcp.admin_schemas.user_history import project_history as project_organization_history
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-
 @dataclass(frozen=True)
 class Resource:
     path: str
@@ -5766,6 +5764,7 @@ async def zammad_apply_admin_change(plan_id: str, acknowledge_high_impact: bool 
 
 def main() -> None:
     """Run the MCP server over stdio."""
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
     mcp.run(transport="stdio")
 
 

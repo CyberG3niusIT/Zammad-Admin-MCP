@@ -4,17 +4,27 @@ import base64
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 
-def _api_root() -> str:
-    raw_url = os.environ.get("ZAMMAD_URL", "").strip()
+@dataclass(frozen=True)
+class ConnectionConfig:
+    url: str
+    token: str | None = None
+    username: str | None = None
+    password: str | None = None
+    trust_env: bool = True
+    proxy: str | None = None
+
+
+def _api_root(raw_url: str | None = None) -> str:
+    raw_url = (raw_url if raw_url is not None else os.environ.get("ZAMMAD_URL", "")).strip()
     if not raw_url:
         raise ValueError("ZAMMAD_URL must be configured")
-    _headers()
     parsed = urlsplit(raw_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("ZAMMAD_URL must be an absolute HTTP or HTTPS URL")
@@ -28,12 +38,12 @@ def _api_root() -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
 
-def _headers() -> dict[str, str]:
-    token = os.environ.get("ZAMMAD_HTTP_TOKEN", "").strip()
+def _headers(config: ConnectionConfig | None = None) -> dict[str, str]:
+    token = ((config.token or "") if config else os.environ.get("ZAMMAD_HTTP_TOKEN", "")).strip()
     if token:
         return {"Authorization": f"Token token={token}", "Accept": "application/json"}
-    username = os.environ.get("ZAMMAD_HTTP_USERNAME", "").strip()
-    password = os.environ.get("ZAMMAD_HTTP_PASSWORD", "")
+    username = (config.username if config else os.environ.get("ZAMMAD_HTTP_USERNAME", "")).strip()
+    password = config.password if config else os.environ.get("ZAMMAD_HTTP_PASSWORD", "")
     if not username or not password:
         raise ValueError("Configure ZAMMAD_HTTP_TOKEN or both ZAMMAD_HTTP_USERNAME and ZAMMAD_HTTP_PASSWORD")
     if ":" in username:
@@ -50,6 +60,7 @@ async def request(
     files: dict[str, tuple[str, bytes, str]] | None = None,
     accept_package_redirect: bool = False,
     max_response_bytes: int | None = None,
+    connection: ConnectionConfig | None = None,
 ) -> Any:
     knowledge_base_attachment_upload = (
         method == "POST"
@@ -63,12 +74,15 @@ async def request(
         raise ValueError("Multipart upload is only supported for fixed package and Knowledge Base attachment routes")
     if accept_package_redirect and (method, path) != ("POST", "/packages"):
         raise ValueError("Redirect acceptance is only supported for package installation")
-    headers = _headers()
+    headers = _headers(connection)
     if files is None:
         headers["Content-Type"] = "application/json"
     async with httpx.AsyncClient(
-        base_url=_api_root(), headers=headers,
-        timeout=httpx.Timeout(120.0 if (method, path) == ("POST", "/users/import") else 30.0), follow_redirects=False,
+        base_url=_api_root(connection.url if connection else None), headers=headers,
+        timeout=httpx.Timeout(120.0 if (method, path) == ("POST", "/users/import") else 30.0),
+        follow_redirects=False,
+        trust_env=connection.trust_env if connection else True,
+        proxy=connection.proxy if connection else None,
     ) as client:
         request_options: dict[str, Any] = {"params": params}
         if files is None:
